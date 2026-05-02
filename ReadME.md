@@ -14,7 +14,7 @@ A Python-based Wordle assistant that combines probability-weighted candidate sel
 - `Engine.py` — core solver logic. Calculates word score based on expected entropy and candidate win probability.
 - `GUI.py` — CustomTkinter application for entering guesses, selecting feedback colors, and viewing suggestions.
 - `Data.py` — builds `scientific_word_data.csv` from `valid_guesses.csv` and `valid_solutions.csv` using word frequency weights (must run for first time only).
-- `Matrix_init.py` — not required to run the GUI directly, but used to initialize word/probability data and related matrices for engine to work (must run for first time only, runs after Data.py).
+- `Matrix_init.py` — not required to run the GUI directly, but used to initialize word/probability data and related matrix `wordle_full_matrix.npy` for engine to work (must run for first time only, runs after Data.py).
 - `scientific_word_data.csv` — preprocessed word list with probability weights.
 - `wordle_full_matrix.npy` — precomputed Wordle response patterns for fast filtering.
 
