@@ -45,7 +45,7 @@ class WordleEngine:
                 pool_loc = np.where(self.possible_indices == i)[0][0]
                 win_prob = current_weights[pool_loc]
 
-            # Your proven scoring logic
+            # Improved scoring logic (Pesimistic early, Balanced mid, Aggressive late)
             if self.turn <= 2:
                 score = entropy
             elif 3 <= self.turn <= 4 and len(self.possible_indices) > 2:
