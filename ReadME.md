@@ -17,6 +17,7 @@ A Python-based Wordle assistant that combines probability-weighted candidate sel
 - `Matrix_init.py` — not required to run the GUI directly, but used to initialize word/probability data and related matrix `wordle_full_matrix.npy` for engine to work (must run for first time only, runs after Data.py).
 - `scientific_word_data.csv` — preprocessed word list with probability weights.
 - `wordle_full_matrix.npy` — precomputed Wordle response patterns for fast filtering.
+- `requirements.txt` — project dependencies.
 
 ## How it works
 
@@ -27,13 +28,15 @@ A Python-based Wordle assistant that combines probability-weighted candidate sel
    - `ANSWER LIKELIHOOD` for likely solutions based on current game state.
 4. After submitting guess feedback, the solver filters possible answers and refreshes recommendations.
 
-## Requirements
+## Requirements to run code
 
-- Python
+- Python 3.12.0
 - `numpy`
 - `pandas`
 - `customtkinter`
 - `wordfreq`
+
+ all of which and more could be found in `requirements.txt` make sure to initialize a venv.
 
 ## Running the app
 
