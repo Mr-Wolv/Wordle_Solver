@@ -1,9 +1,9 @@
-name: Build Standalone EXE
+name: Build and Release Standalone EXE
 
 on:
   push:
     tags:
-      - 'v*' # Triggers when pushing a tag like v1.0.0
+      - 'v*' # Triggers whenever a tag starting with 'v' is pushed (e.g., v1.0.0)
 
 jobs:
   build:
@@ -24,16 +24,28 @@ jobs:
         python -m pip install --upgrade pip
         pip install -r requirements.txt
 
+    - name: Generate Data and Matrix
+      run: |
+        # These scripts generate the necessary files for the EXE
+        python Data.py
+        python Matrix_init.py
+
     - name: Build with PyInstaller
       run: |
-        pyinstaller --noconsole --onefile `
+        # We bundle everything into one standalone file
+        pyinstaller --noconsole --onefile --clean `
+        --name "Wordle-Strat-Console" `
         --add-data "scientific_word_data.csv;." `
         --add-data "wordle_full_matrix.npy;." `
         GUI.py
 
-    - name: Release
+    - name: Create GitHub Release
       uses: softprop/action-gh-release@v2
       with:
-        files: dist/GUI.exe
+        files: dist/Wordle-Strat-Console.exe
+        name: Release ${{ github.ref_name }}
+        draft: false
+        prerelease: false
+        generate_release_notes: true # Automatically pulls commit messages into the description
       env:
         GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
