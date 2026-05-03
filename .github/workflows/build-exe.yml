@@ -37,7 +37,6 @@ jobs:
     - name: Build with PyInstaller
       run: |
         # We bundle everything into one standalone file
-        pyinstaller --noconsole --onefile --clean `
         pyinstaller --noconsole --onefile --clean `                        
          --name "Wordle-Strat-Console" `
          --icon "icon.ico" `
