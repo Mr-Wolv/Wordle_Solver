@@ -36,7 +36,7 @@ A Python-based Wordle assistant that combines probability-weighted candidate sel
 - `customtkinter`
 - `wordfreq`
 
- all of which and more could be found in `requirements.txt` make sure to initialize a venv.
+ all of which and more could be found in `requirements.txt`, make sure to initialize a venv.
 
 ## Running the app
 
