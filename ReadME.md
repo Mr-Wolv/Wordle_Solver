@@ -47,6 +47,15 @@ or just run the executeble file in release.
 
 Then enter your 5-letter guess, set the feedback colors, and submit to update the solver state.
 
+## Download & Play
+
+No Python installation required.
+
+1. Go to the [Releases](https://github.com/Muhammad-H-Bakr/Wordle_Solver/releases) page.
+2. Download `Wordle-Strat-Console.exe`.
+3. Run and solve.
+SHA-256: 18816F04DDB5C6892F349298AA9D98A2BEFF077E58B6206BEA9A0BB403F21312
+
 ## References
 
 - 3B1B Wordle: [Repo](https://github.com/3b1b/videos/tree/e317d6c5eaa8370a2deb4d148c246b0d0e9fbe6f/_2022/wordle)
