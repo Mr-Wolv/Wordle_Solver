@@ -1,0 +1,39 @@
+name: Build Standalone EXE
+
+on:
+  push:
+    tags:
+      - 'v*' # Triggers when pushing a tag like v1.0.0
+
+jobs:
+  build:
+    runs-on: windows-latest
+
+    steps:
+    - name: Checkout Code
+      uses: actions/checkout@v4
+
+    - name: Set up Python 3.12
+      uses: actions/setup-python@v5
+      with:
+        python-version: '3.12'
+        cache: 'pip'
+
+    - name: Install Dependencies
+      run: |
+        python -m pip install --upgrade pip
+        pip install -r requirements.txt
+
+    - name: Build with PyInstaller
+      run: |
+        pyinstaller --noconsole --onefile `
+        --add-data "scientific_word_data.csv;." `
+        --add-data "wordle_full_matrix.npy;." `
+        GUI.py
+
+    - name: Release
+      uses: softprop/action-gh-release@v2
+      with:
+        files: dist/GUI.exe
+      env:
+        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
