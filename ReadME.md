@@ -9,7 +9,7 @@ A Python-based Wordle assistant that combines probability-weighted candidate sel
 - Suggests high-entropy guesses for narrowing the answer pool and high-probability candidate words for final solves.
 - Tracks user guesses and feedback through a graphical interface.
 
-## Key files
+## Key files (code)
 
 - `Engine.py` — core solver logic. Calculates word score based on expected entropy and candidate win probability.
 - `GUI.py` — CustomTkinter application for entering guesses, selecting feedback colors, and viewing suggestions.
@@ -42,6 +42,8 @@ From the repository root:
 ```bash
 python GUI.py
 ```
+
+or just run the executeble file in release.
 
 Then enter your 5-letter guess, set the feedback colors, and submit to update the solver state.
 

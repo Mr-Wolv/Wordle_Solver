@@ -1,12 +1,24 @@
 import numpy as np
 import pandas as pd
+import sys
+import os
 
+
+def resource_path(relative_path):
+    """Get absolute path to resource, works for dev and for PyInstaller"""
+    try:
+        # PyInstaller creates a temp folder and stores path in _MEIPASS
+        base_path = sys._MEIPASS # type: ignore
+    except Exception:
+        base_path = os.path.abspath(".")
+
+    return os.path.join(base_path, relative_path)
 
 class WordleEngine:
     def __init__(
         self,
-        words_path="scientific_word_data.csv",
-        matrix_path="wordle_full_matrix.npy",
+        words_path=resource_path("scientific_word_data.csv"),
+        matrix_path=resource_path("wordle_full_matrix.npy"),
     ):
         self.df = pd.read_csv(words_path)
         self.all_words = self.df["word"].tolist()
