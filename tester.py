@@ -1,3 +1,7 @@
+#This script is meant for my own CI/CD testing. to run this script outside its default parameters, in terminal run:
+#`python tester.py --mode hard --samples 500 --silent` 
+#to test 500 random words in hard mode with only the final report printed (silent). Adjust parameters as needed.
+
 import pandas as pd
 import multiprocessing as mp
 from Engine import WordleEngine
