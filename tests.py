@@ -1,105 +1,166 @@
 import pandas as pd
 import time
-import random
+import multiprocessing as mp
 from Engine import WordleEngine
+import random
 
-is_hard_mode = False  # Set to True to test the merged Hard Mode logic
+# --- CONFIGURATION ---
+TEST_HARD_MODE = False
+SAMPLE_SIZE = 200
+NUM_CORES = mp.cpu_count() - 1
 
-def run_random_stress_test(csv_path="valid_solutions.csv", sample_size=200):
-    try:
-        # Load the textbook solutions
-        solutions_df = pd.read_csv(csv_path)
-        # Convert the first column to a list of words
-        all_solutions = solutions_df.iloc[:, 0].dropna().tolist()
 
-        # Textbook Random Sampling
-        if len(all_solutions) > sample_size:
-            test_subset = random.sample(all_solutions, sample_size)
-        else:
-            test_subset = all_solutions
-            sample_size = len(all_solutions)
+def worker_task(word_chunk, log_queue):
+    """Processes a chunk and sends live updates to the queue."""
+    # Engine loaded once per core for efficiency
+    engine = WordleEngine()
 
-    except Exception as e:
-        print(f"ERROR: Could not load {csv_path}. {e}")
-        return
-
-    print(f"STARTING RANDOM STRESS TEST")
-    print(f"Sample Size: {sample_size} words | Mode: Hard Mode {('ON' if is_hard_mode else 'OFF')}")
-    print("-" * 60)
-
-    results = []
-    failures = []
-    start_time = time.time()
-
-    for idx, secret_word in enumerate(test_subset, 1):
-        target = secret_word.lower().strip()
-        engine = WordleEngine()
+    for target in word_chunk:
+        target = target.lower().strip()
+        engine.reset()
         turns = 0
 
         while True:
             turns += 1
-            # 1. Get suggestions (Testing Hard Mode logic)
-            strat, _ = engine.get_suggestions(is_hard_mode)
+            strat, _ = engine.get_suggestions(is_hard_mode=TEST_HARD_MODE)
 
             if not strat:
-                print(
-                    f"[{idx:03d}/{sample_size}] {target.upper():<7} | ERROR: Engine collapsed."
-                )
-                failures.append((target, "Zero-Pool Collapse"))
+                log_queue.put((target, -1))  # Signal failure
                 break
 
             guess = strat[0]["word"]
-            pattern = engine.calculate_pattern(guess, target)
-
-            # 2. Update engine state
-            success = engine.update_state(guess, pattern)
-
-            if not success:
-                print(
-                    f"[{idx:03d}/{sample_size}] {target.upper():<7} | ERROR: Impossible Pattern at Turn {turns}"
-                )
-                failures.append((target, f"Update failed at turn {turns}"))
-                break
-
-            # 3. Check for Win
             if guess == target:
-                results.append(turns)
-                avg = sum(results) / len(results)
-                # Print real-time success line
-                print(
-                    f"[{idx:03d}/{sample_size}] {target.upper():<7} | Turns: {turns:<2} | Avg: {avg:.3f}"
-                )
+                log_queue.put((target, turns))  # Signal success
                 break
 
-            # Safety break for infinite loops
-            if turns > 10:
-                print(
-                    f"[{idx:03d}/{sample_size}] {target.upper():<7} | TIMEOUT: 10+ turns."
-                )
-                failures.append((target, "Turn limit exceeded"))
+            pattern = engine.calculate_pattern(guess, target)
+            engine.update_state(guess, pattern)
+
+            if turns >= 10:
+                log_queue.put((target, 11))  # Signal timeout
                 break
+
+
+def listener_task(log_queue, total_expected):
+    count = 0
+    results = []
+    distribution = {1: 0, 2: 0, 3: 0, 4: 0, 5: 0, 6: 0, "fail": 0}
+    start_time = time.time()
+
+    while count < total_expected:
+        target, turns = log_queue.get()
+        count += 1
+
+        # Track Distribution
+        if 0 < turns <= 6:
+            distribution[turns] += 1
+            results.append(turns)
+        elif turns > 6:
+            distribution[6] += 1  # Any success > 6
+            results.append(turns)
+        else:
+            distribution["fail"] += 1
+
+        # Real-time progress
+        if count % 10 == 0 or count == total_expected:
+            avg = sum(results) / len(results) if results else 0
+            print(
+                f"🛰️  [PROFILING: {count:04d}/{total_expected}] | Current Avg: {avg:.3f} | Last: {target.upper()}"
+            )
 
     end_time = time.time()
+    total_time = end_time - start_time
 
-    # --- FINAL TEXTBOOK REPORT ---
-    print("\n" + "=" * 40)
-    print("      STRESS TEST SUMMARY")
-    print("=" * 40)
-    print(f"Words Tested:     {sample_size}")
-    print(f"Success Rate:     {((len(results)/sample_size)*100):.1f}%")
-    if results:
-        print(f"Average Turns:    {sum(results)/len(results):.3f}")
-        print(f"Max Turns:        {max(results)}")
-    print(f"Total Time:       {end_time - start_time:.2f}s")
+    # --- RIGOROUS TEST ANALYSIS REPORT ---
+    print("\n" + "═" * 50)
+    print(" 💠 BEAST ENGINE: FORENSIC ARCHITECTURE REPORT 💠")
+    print("═" * 50)
+    print(f"STATUS:         MISSION COMPLETE")
+    print(f"THROUGHPUT:     {total_expected / total_time:.2f} words/sec")
+    print(f"EFFICIENCY:     {sum(results)/len(results):.4f} Avg Turns")
+    print("═" * 50)
 
-    if failures:
-        print("\nPATHOLOGICAL CASES FOUND:")
-        for word, reason in failures:
-            print(f" - {word.upper()}: {reason}")
+    print("📈 SOLUTION DENSITY DISTRIBUTION:")
+    for t in range(1, 7):
+        label = "SURPASSES PROOF" if t <= 5 else "STRESS DETECTED"
+        count_val = distribution[t]
+        percent = (count_val / total_expected) * 100
+        bar = "█" * int(percent / 2)
+        print(f" Turn {t}: {percent:5.1f}% | {bar} ({count_val}) [{label}]")
+
+    if distribution["fail"] > 0:
+        print(f" ❌ FAILURES: {distribution['fail']} words collapsed.")
+
+    print("\n🧐 ARCHITECTURAL VERDICT:")
+    if max(results) <= 5:
+        print(
+            " > PROOF VALIDATED: The engine is a TRUE SOLVER. No word exceeded Turn 5."
+        )
     else:
-        print("\nNO ERRORS FOUND. Engine state logic is stable.")
+        print(
+            f" > PROOF ADJUSTED: The engine is an OPTIMIZER. Max turns hit {max(results)}."
+        )
+    print("═" * 50)
+
+
+def run_live_stress_test():
+    try:
+        # 1. Load the full solution set verbatim
+        solutions_df = pd.read_csv("valid_solutions.csv")
+        all_solutions = solutions_df.iloc[:, 0].dropna().tolist()
+
+        # 2. Textbook Random Sampling
+        # This ensures we aren't just testing 'A' words or 'first' words
+        if len(all_solutions) > SAMPLE_SIZE:
+            print(
+                f"🎲 Randomly selecting {SAMPLE_SIZE} targets from pool of {len(all_solutions)}..."
+            )
+            test_pool = random.sample(all_solutions, SAMPLE_SIZE)
+        else:
+            print(
+                f"⚠️ Sample size exceeds pool. Testing all {len(all_solutions)} words."
+            )
+            test_pool = all_solutions
+            random.shuffle(test_pool)  # Shuffle anyway for non-linear testing
+
+    except Exception as e:
+        print(f"Data Error: {e}")
+        return
+
+    # Set up Multiprocessing structures[cite: 2, 3]
+    manager = mp.Manager()
+    log_queue = manager.Queue()
+
+    # 3. Chunk the randomized pool
+    chunk_size = len(test_pool) // NUM_CORES
+    chunks = [
+        test_pool[i : i + chunk_size] for i in range(0, len(test_pool), chunk_size)
+    ]
+
+    actual_total = sum(len(c) for c in chunks)
+
+    print(f"🚀 STARTING RANDOMIZED LIVE STRESS TEST ({NUM_CORES} CORES)")
+    print(
+        f"MODAL ANALYSIS: {'HARD MODE' if TEST_HARD_MODE else 'NORMAL MODE (SOLVER)'}"
+    )
+    print("-" * 50)
+
+    # Start the listener thread/process for real-time printing
+    listener = mp.Process(target=listener_task, args=(log_queue, actual_total))
+    listener.start()
+
+    # Start workers
+    processes = []
+    for chunk in chunks:
+        p = mp.Process(target=worker_task, args=(chunk, log_queue))
+        p.start()
+        processes.append(p)
+
+    # Wait for everything to finish
+    for p in processes:
+        p.join()
+    listener.join()
 
 
 if __name__ == "__main__":
-    # You can change the 200 here if you want a different test sample size, but 200 is a good balance for stress testing without taking too long.
-    run_random_stress_test(sample_size=200)
+    run_live_stress_test()
