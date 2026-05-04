@@ -3,6 +3,7 @@ import time
 import random
 from Engine import WordleEngine
 
+is_hard_mode = False  # Set to True to test the merged Hard Mode logic
 
 def run_random_stress_test(csv_path="valid_solutions.csv", sample_size=200):
     try:
@@ -19,11 +20,11 @@ def run_random_stress_test(csv_path="valid_solutions.csv", sample_size=200):
             sample_size = len(all_solutions)
 
     except Exception as e:
-        print(f"❌ ERROR: Could not load {csv_path}. {e}")
+        print(f"ERROR: Could not load {csv_path}. {e}")
         return
 
-    print(f"🔥 STARTING RANDOM STRESS TEST")
-    print(f"Sample Size: {sample_size} words | Mode: Hard Mode ON")
+    print(f"STARTING RANDOM STRESS TEST")
+    print(f"Sample Size: {sample_size} words | Mode: Hard Mode {('ON' if is_hard_mode else 'OFF')}")
     print("-" * 60)
 
     results = []
@@ -37,12 +38,12 @@ def run_random_stress_test(csv_path="valid_solutions.csv", sample_size=200):
 
         while True:
             turns += 1
-            # 1. Get suggestions (Testing your merged Hard Mode logic)
-            strat, _ = engine.get_suggestions(is_hard_mode=True)
+            # 1. Get suggestions (Testing Hard Mode logic)
+            strat, _ = engine.get_suggestions(is_hard_mode)
 
             if not strat:
                 print(
-                    f"[{idx:03d}/{sample_size}] ❌ {target.upper():<7} | ERROR: Engine collapsed."
+                    f"[{idx:03d}/{sample_size}] {target.upper():<7} | ERROR: Engine collapsed."
                 )
                 failures.append((target, "Zero-Pool Collapse"))
                 break
@@ -50,12 +51,12 @@ def run_random_stress_test(csv_path="valid_solutions.csv", sample_size=200):
             guess = strat[0]["word"]
             pattern = engine.calculate_pattern(guess, target)
 
-            # 2. Update engine state (The "Fool-Proof" check)
+            # 2. Update engine state
             success = engine.update_state(guess, pattern)
 
             if not success:
                 print(
-                    f"[{idx:03d}/{sample_size}] ❌ {target.upper():<7} | ERROR: Impossible Pattern at Turn {turns}"
+                    f"[{idx:03d}/{sample_size}] {target.upper():<7} | ERROR: Impossible Pattern at Turn {turns}"
                 )
                 failures.append((target, f"Update failed at turn {turns}"))
                 break
@@ -66,14 +67,14 @@ def run_random_stress_test(csv_path="valid_solutions.csv", sample_size=200):
                 avg = sum(results) / len(results)
                 # Print real-time success line
                 print(
-                    f"[{idx:03d}/{sample_size}] ✅ {target.upper():<7} | Turns: {turns:<2} | Avg: {avg:.3f}"
+                    f"[{idx:03d}/{sample_size}] {target.upper():<7} | Turns: {turns:<2} | Avg: {avg:.3f}"
                 )
                 break
 
             # Safety break for infinite loops
             if turns > 10:
                 print(
-                    f"[{idx:03d}/{sample_size}] ⚠️ {target.upper():<7} | TIMEOUT: 10+ turns."
+                    f"[{idx:03d}/{sample_size}] {target.upper():<7} | TIMEOUT: 10+ turns."
                 )
                 failures.append((target, "Turn limit exceeded"))
                 break
@@ -92,13 +93,13 @@ def run_random_stress_test(csv_path="valid_solutions.csv", sample_size=200):
     print(f"Total Time:       {end_time - start_time:.2f}s")
 
     if failures:
-        print("\n🚩 PATHOLOGICAL CASES FOUND:")
+        print("\nPATHOLOGICAL CASES FOUND:")
         for word, reason in failures:
             print(f" - {word.upper()}: {reason}")
     else:
-        print("\n✨ NO ERRORS FOUND. Engine state logic is stable.")
+        print("\nNO ERRORS FOUND. Engine state logic is stable.")
 
 
 if __name__ == "__main__":
-    # You can change the 200 here if you want a different "snack-sized" test
+    # You can change the 200 here if you want a different test sample size, but 200 is a good balance for stress testing without taking too long.
     run_random_stress_test(sample_size=200)
