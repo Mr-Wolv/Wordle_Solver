@@ -22,6 +22,7 @@ Inspired by [3Blue1Brown’s Wordle video & code](https://github.com/3b1b/videos
 - [Development Setup](#development-setup)
 - [Dependencies](#dependencies)
 - [License & Credits](#license--credits)
+- [Addendum](#addendum)
 
 ---
 
@@ -235,3 +236,13 @@ Key libraries:
 - 3Blue1Brown’s Wordle analysis.
 - Word lists sourced from the Kaggle Wordle dataset.
 - Code by Me, under The GNU General Public License v3.0 (GPLv3).
+
+## Addendum
+
+**A Note on Hard Mode**:
+
+In normal Wordle mode, the *solver* is exactly that — a solver. It does not need more than 5 guesses and averages a crisp ~3.6 turns. It was, I dare say, a beautiful, successful experiment.
+
+Hard mode, however, tells a different story. Here the solver becomes an *approximator*. The average is still respectable at ~3.8, but in roughly 1% of games it stumbles to 7 turns. These stubborn cases arise when the remaining word pool contains linguistic neighbors — words sharing 3 or 4 letters — that the algorithm struggles to tease apart. The culprit is often the first guess, but also the rules of hard mode, which disallow "burner words." In normal mode, you can sacrifice the immediate win by playing a burner word that eliminates many candidates at once, efficiently pruning the space and guaranteeing victory in the next move or two. Hard mode forbids this; you are forced to reuse the letters you’ve already locked in, and so you can get trapped in a slow-motion guessing loop.
+
+I built this project for normal mode, and the mathematics rose to the occasion. Hard mode, though, exposes a subtle frontier: when strategy exhausts its tools, the game reverts, briefly, to a guessing game. It's a humbling reminder that even elegant logic has its edges.
