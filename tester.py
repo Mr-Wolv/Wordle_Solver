@@ -1,6 +1,8 @@
-#This script is meant for my own local testing and CI/CD future testing. to run this script outside its default parameters, in terminal run:
-#`python tester.py --mode hard --samples 500 --silent` 
-#to test 500 random words in hard mode with only the final report printed (silent). Adjust parameters as needed.
+"""
+This script is meant for my own local testing and CI/CD future testing. to run this script outside its default parameters, in terminal run:
+`python tester.py --mode hard --samples 500 --silent`
+to test 500 random words in hard mode with only the final report printed (silent). Adjust parameters as needed.
+"""
 
 import pandas as pd
 import multiprocessing as mp
@@ -9,6 +11,7 @@ import random
 import argparse
 import sys
 import time
+
 
 def worker_task(word_chunk, log_queue, is_hard_mode):
     engine = WordleEngine()
@@ -32,6 +35,7 @@ def worker_task(word_chunk, log_queue, is_hard_mode):
                 log_queue.put((target, 11))
                 break
 
+
 def listener_task(log_queue, total_expected, is_hard_mode, silent):
     count = 0
     results = []
@@ -49,7 +53,9 @@ def listener_task(log_queue, total_expected, is_hard_mode, silent):
         # Use the silent flag to control real-time logging
         if not silent:
             avg_so_far = sum(results) / len(results)
-            print(f"[PROFILING: {count:04d}/{total_expected}] | Avg: {avg_so_far:.3f} | Last: {target.upper()}")
+            print(
+                f"[PROFILING: {count:04d}/{total_expected}] | Avg: {avg_so_far:.3f} | Last: {target.upper()}"
+            )
 
     total_duration = time.time() - start_time
     failure_count = len(morgue)
@@ -65,8 +71,9 @@ def listener_task(log_queue, total_expected, is_hard_mode, silent):
     if morgue:
         print(f"THE MORGUE: {', '.join(morgue)}")
     print("═" * 50)
-    
+
     sys.exit(0)
+
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Beast Engine Benchmarker")
@@ -91,7 +98,9 @@ if __name__ == "__main__":
     num_cores = max(1, mp.cpu_count() - 1)
     # Ensure chunking handles small sample sizes correctly
     chunk_size = max(1, len(test_pool) // num_cores)
-    chunks = [test_pool[i : i + chunk_size] for i in range(0, len(test_pool), chunk_size)]
+    chunks = [
+        test_pool[i : i + chunk_size] for i in range(0, len(test_pool), chunk_size)
+    ]
 
     listener = mp.Process(
         target=listener_task, args=(log_queue, len(test_pool), is_hard, args.silent)
