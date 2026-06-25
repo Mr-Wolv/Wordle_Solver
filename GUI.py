@@ -1,9 +1,8 @@
 import customtkinter as ctk
 from tkinter import messagebox
 from Engine import WordleEngine
+from utils import resource_path
 import threading  # To prevent UI freezing
-import sys
-import os
 
 # --- Configuration & Styling ---
 COLOR_GREY = "#3a3a3c"
@@ -14,14 +13,6 @@ COLOR_PANEL = "#1e1e1f"
 COLOR_TEXT = "#d7dadc"
 COLOR_SUBTLE = "#818384"
 COLOR_ERROR = "#ff4b4b"
-
-
-def resource_path(relative_path):
-    try:
-        base_path = sys._MEIPASS  # type: ignore
-    except Exception:
-        base_path = os.path.abspath(".")
-    return os.path.join(base_path, relative_path)
 
 
 class WordleApp(ctk.CTk):

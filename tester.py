@@ -62,7 +62,8 @@ def listener_task(log_queue, total_expected, is_hard_mode, silent):
     accuracy = ((total_expected - failure_count) / total_expected) * 100
     avg_turns = sum(results) / len(results) if results else 0
 
-    print("\n" + "═" * 50)
+    sep = "=" * 50
+    print(f"\n{sep}")
     print(f"PROFILING REPORT: {'HARD' if is_hard_mode else 'NORMAL'} MODE")
     print(f"TEST ACCURACY: {accuracy:.2f}% | AVG TURNS: {avg_turns:.4f}")
     print(f"TOTAL WORDS: {total_expected} | FAILURES: {failure_count}")
@@ -70,7 +71,7 @@ def listener_task(log_queue, total_expected, is_hard_mode, silent):
 
     if morgue:
         print(f"THE MORGUE: {', '.join(morgue)}")
-    print("═" * 50)
+    print(sep)
 
     sys.exit(0)
 
