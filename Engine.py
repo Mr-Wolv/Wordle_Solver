@@ -1,3 +1,6 @@
+import json
+import os
+
 import numpy as np
 import pandas as pd
 from utils import resource_path
@@ -59,15 +62,78 @@ class WordleEngine:
         self.full_weights: np.ndarray = np.zeros(n_words, dtype=np.float64)
         self.turn: int = 1
 
-    # ── First-turn cache ────────────────────────────────────────────
+    # ── First-turn cache (memory + disk) ───────────────────────────
+    _TURN1_CACHE_FILE: str = "turn1_cache.json"
+
+    @staticmethod
+    def _turn1_cache_path() -> str:
+        return os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                            WordleEngine._TURN1_CACHE_FILE)
+
+    @staticmethod
+    def _load_disk_cache() -> dict:
+        """Load the persistent turn-1 cache from disk (JSON).
+
+        Search order:
+          1. Bundled resource path (PyInstaller --add-data)
+          2. Project directory (source / dev mode)
+        """
+        # Try bundled resource first (for PyInstaller --add-data)
+        try:
+            bundled = resource_path(WordleEngine._TURN1_CACHE_FILE)
+            if os.path.exists(bundled):
+                with open(bundled, "r") as f:
+                    return json.load(f)
+        except Exception:
+            pass
+
+        # Fall back to project directory
+        path = WordleEngine._turn1_cache_path()
+        if os.path.exists(path):
+            try:
+                with open(path, "r") as f:
+                    return json.load(f)
+            except Exception:
+                pass
+        return {}
+
+    @staticmethod
+    def _save_disk_cache(cache: dict) -> None:
+        """Save the persistent turn-1 cache to disk (JSON)."""
+        path = WordleEngine._turn1_cache_path()
+        try:
+            with open(path, "w") as f:
+                json.dump(cache, f)
+        except Exception:
+            pass
 
     def _first_turn(self, is_hard_mode: bool) -> tuple[list[dict], list[dict]]:
         key = (is_hard_mode,)
         if key in self._turn1_cache:
             return self._turn1_cache[key]
 
+        # Try disk cache before computing
+        disk_cache = self._load_disk_cache()
+        disk_key = "hard" if is_hard_mode else "normal"
+        if disk_key in disk_cache:
+            cached = disk_cache[disk_key]
+            # Rebuild dicts (words are stored as indices to handle any word-list)
+            top_strategic = [
+                {"word": self.all_words[i], "score": s, "win_prob": w, "is_candidate": c}
+                for i, s, w, c in cached["strategic"]
+            ]
+            top_candidates = [
+                {"word": self.all_words[i], "score": s, "win_prob": w, "is_candidate": c}
+                for i, s, w, c in cached["candidates"]
+            ]
+            self._turn1_cache[key] = (top_strategic, top_candidates)
+            return top_strategic, top_candidates
+
         is_hard = is_hard_mode
         pool_size = len(self.possible_indices)
+        if pool_size == 0:
+            return [], []
+
         current_weights = self.global_probs.copy()
         current_weights /= current_weights.sum()
         self.full_weights.fill(0.0)
@@ -92,6 +158,19 @@ class WordleEngine:
             reverse=True,
         )[:10]
 
+        # Save to disk cache for future cold starts
+        disk_cache[disk_key] = {
+            "strategic": [
+                [self.word_to_idx[r["word"]], r["score"], r["win_prob"], r["is_candidate"]]
+                for r in top_strategic
+            ],
+            "candidates": [
+                [self.word_to_idx[r["word"]], r["score"], r["win_prob"], r["is_candidate"]]
+                for r in top_candidates
+            ],
+        }
+        self._save_disk_cache(disk_cache)
+
         self._turn1_cache[key] = (top_strategic, top_candidates)
         return top_strategic, top_candidates
 
@@ -100,12 +179,12 @@ class WordleEngine:
     def get_suggestions(
         self, is_hard_mode: bool = False
     ) -> tuple[list[dict], list[dict]]:
-        if self.turn == 1:
-            return self._first_turn(is_hard_mode)
-
         pool_size = len(self.possible_indices)
         if pool_size == 0:
             return [], []
+
+        if self.turn == 1:
+            return self._first_turn(is_hard_mode)
 
         current_weights = self.global_probs[self.possible_indices]
         current_weights /= current_weights.sum()

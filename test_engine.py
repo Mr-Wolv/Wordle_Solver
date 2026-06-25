@@ -60,8 +60,9 @@ class TestCalculatePattern:
     def test_one_yellow(self, engine):
         """Letter exists but wrong position."""
         p = engine.calculate_pattern("abcde", "fghda")
-        # 'a' is yellow at position 4 (value 1), rest grey → 1 * 3^4 = 81
-        assert p == 81
+        # 'a' is yellow at position 0 (value 1), 'd' is green at pos 3 (value 2)
+        # pattern = 1,0,0,2,0 → 1*1 + 2*27 = 55
+        assert p == 55
 
     def test_one_green(self, engine):
         """Exact match at one position."""
@@ -72,26 +73,26 @@ class TestCalculatePattern:
     def test_mixed_pattern(self, engine):
         """A typical Wordle pattern."""
         # Guess: CRANE, Secret: CRONY
-        # C→C green, R→R green, A→O grey, N→N green, E→Y grey
-        # pattern = 2, 2, 0, 2, 0 → 0 + 2*3 + 2*9 + 0 + 2*81
-        #        = 0 + 6 + 18 + 0 + 162 = 186
+        # C→C green (pos 0), R→R green (pos 1), A→O grey, N→N green (pos 3), E→Y grey
+        # pattern = 2,2,0,2,0 → 2*1 + 2*3 + 0*9 + 2*27 + 0*81 = 62
         p = engine.calculate_pattern("crane", "crony")
-        expected = 0 + 2*3 + 2*9 + 0*27 + 2*81
+        expected = 2 + 2*3 + 2*27  # 2 + 6 + 54 = 62
         assert p == expected
 
     def test_double_letter_partial(self, engine):
         """If guess has two 'a's but secret has one, only one scores."""
         p = engine.calculate_pattern("aaaaa", "bcdea")
-        # One 'a' at position 4 is yellow, rest grey → pattern = 0,0,0,0,1
-        expected = 1 * 81  # 3^4
+        # One 'a' at position 4 is green (secret[4] == 'a'), rest grey
+        # pattern = 0,0,0,0,2 → 2 * 81 = 162
+        expected = 2 * 81
         assert p == expected
 
     def test_double_letter_exact(self, engine):
         """If both have two 'a's, both score."""
         p = engine.calculate_pattern("ababa", "abaca")
-        # a→a green, b→b green, a→a green, b→c grey, a→a green
-        # pattern = 2,2,2,0,2 → 0 + 2*3 + 2*9 + 2*27 + 0 + 2*81
-        expected = 0 + 2*3 + 2*9 + 2*27 + 0 + 2*81
+        # a→a green(pos0), b→b green(pos1), a→a green(pos2), b→c grey(pos3), a→a green(pos4)
+        # pattern = 2,2,2,0,2 → 2*1 + 2*3 + 2*9 + 0 + 2*81 = 188
+        expected = 2 + 2*3 + 2*9 + 2*81  # 2 + 6 + 18 + 162 = 188
         assert p == expected
 
 
@@ -193,12 +194,12 @@ class TestGetSuggestions:
         strat, cands = engine.get_suggestions(is_hard_mode=True)
         assert len(strat) == 10
 
-    def test_first_guess_is_tears_or_tries(self, engine):
-        """The optimal first guess in standard mode should be TEARS or TRIES."""
+    def test_first_guess_is_tares(self, engine):
+        """The optimal first guess in standard mode is TARES (highest entropy)."""
         engine.reset()
         strat, _ = engine.get_suggestions()
         top_word = strat[0]["word"]
-        assert top_word in ("tears", "tries", "stare", "tires", "taser")
+        assert top_word == "tares", f"Expected 'tares', got '{top_word}'"
 
 
 # ── Integration: a full game ──────────────────────────────────────────

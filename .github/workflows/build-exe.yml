@@ -30,18 +30,23 @@ jobs:
 
     - name: Generate Data and Matrix
       run: |
-        # These scripts generate the necessary files for the EXE
         python Data.py
         python Matrix_init.py
 
+    - name: Generate Turn-1 Cache (preload)
+      run: |
+        # Precompute both normal and hard mode first-guess results
+        # so the exe starts instantly with zero delay
+        python -c "from Engine import WordleEngine; e=WordleEngine(); e.get_suggestions(); e.get_suggestions(is_hard_mode=True)"
+
     - name: Build with PyInstaller
       run: |
-        # We bundle everything into one standalone file
         pyinstaller --noconsole --onefile --clean `
          --name "Wordle-Strat-Console" `
          --icon "icon.ico" `
          --add-data "scientific_word_data.csv;." `
          --add-data "wordle_full_matrix.npy;." `
+         --add-data "turn1_cache.json;." `
          GUI.py
 
     - name: Create GitHub Release
