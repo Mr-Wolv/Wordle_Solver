@@ -18,25 +18,8 @@ import pstats
 import io
 import random
 import sys
-from Engine import WordleEngine
 
-
-def play_game(secret: str, is_hard: bool = False) -> int:
-    """Play a single game and return the number of turns taken."""
-    engine = WordleEngine()
-    turns = 0
-    while True:
-        turns += 1
-        strat, _ = engine.get_suggestions(is_hard_mode=is_hard)
-        if not strat:
-            return -1
-        guess = strat[0]["word"]
-        if guess == secret:
-            return turns
-        pattern = engine.calculate_pattern(guess, secret)
-        engine.update_state(guess, pattern)
-        if turns >= 10:
-            return 11
+from _game import play_one_game
 
 
 def main():
@@ -79,8 +62,12 @@ def main():
 
     profiler = cProfile.Profile()
 
-    # Profile the game function
-    profiler.runcall(play_game, secret, is_hard)
+    # Profile via the shared game helper (discard word — we only need turns)
+    def _profiled():
+        _, turns = play_one_game(secret, is_hard)
+        return turns
+
+    profiler.runcall(_profiled)
 
     s = io.StringIO()
     ps = pstats.Stats(profiler, stream=s).sort_stats("cumtime")

@@ -3,52 +3,59 @@ Exhaustive edge-case analysis: simulate every possible solution word in both
 modes and report the worst-performing words.
 
 Usage:
-    python analyze_failures.py                      # normal mode only
+    python analyze_failures.py                      # quick sample (100 words, both modes)
+    python analyze_failures.py --all                # ALL 2315 words (takes hours)
+    python analyze_failures.py --samples 500        # 500 random words
     python analyze_failures.py --mode hard          # hard mode only
-    python analyze_failures.py --mode both          # both modes
+    python analyze_failures.py --sequential          # single-process (gentle on RAM)
     python analyze_failures.py --save results.csv   # export full results
 """
 
 import argparse
 import multiprocessing as mp
+import random
 import time
 import sys
 
 import pandas as pd
-from Engine import WordleEngine
-
+from _game import play_one_game
 
 
 def worker(words_chunk, log_queue, is_hard):
-    engine = WordleEngine()
+    """Worker process: play games for a chunk of words."""
     for word in words_chunk:
-        word = word.lower().strip()
-        engine.reset()
-        turns = 0
-        while True:
-            turns += 1
-            strat, _ = engine.get_suggestions(is_hard_mode=is_hard)
-            if not strat:
-                log_queue.put((word, -1))
-                break
-            guess = strat[0]["word"]
-            if guess == word:
-                log_queue.put((word, turns))
-                break
-            pattern = engine.calculate_pattern(guess, word)
-            engine.update_state(guess, pattern)
-            if turns >= 10:
-                log_queue.put((word, 11))
-                break
+        w, t = play_one_game(word, is_hard)
+        log_queue.put((w, t))
 
 
-def run_analysis(solutions, is_hard, silent):
-    """Test all words and return (results_list, morgue_list)."""
+def run_analysis(solutions, is_hard, silent, workers=0):
+    """Test all words and return (results_list, morgue_list).
+
+    Args:
+        workers: 0 = auto (cpu_count // 2), 1 = sequential, 2+ = explicit
+    """
+    if workers == 1:
+        # Sequential path — no multiprocessing at all
+        results = []
+        morgue = []
+        total = len(solutions)
+        report_interval = max(1, total // 20)
+        for idx, word in enumerate(solutions):
+            _, turns = play_one_game(word, is_hard)
+            results.append((word, turns))
+            if turns > 6 or turns <= 0:
+                morgue.append((word, turns))
+            if not silent and (idx + 1) % report_interval == 0:
+                print(f"  [{idx+1}/{total}] processed ...")
+        return results, morgue
+
+    # Parallel path
     manager = mp.Manager()
     q = manager.Queue()
 
-    # Chunk by CPU count
-    n_workers = max(1, mp.cpu_count() - 1)
+    n_workers = max(1, mp.cpu_count() // 2) if workers <= 0 else workers
+    n_workers = min(n_workers, len(solutions))
+
     chunk_size = max(1, len(solutions) // n_workers)
     chunks = [solutions[i:i + chunk_size] for i in range(0, len(solutions), chunk_size)]
 
@@ -62,13 +69,14 @@ def run_analysis(solutions, is_hard, silent):
     morgue = []
     count = 0
     total = len(solutions)
+    report_interval = max(1, total // 20)
     while count < total:
         word, turns = q.get()
         count += 1
         results.append((word, turns))
         if turns > 6 or turns <= 0:
             morgue.append((word, turns))
-        if not silent and count % 200 == 0:
+        if not silent and count % report_interval == 0:
             print(f"  [{count}/{total}] processed ...")
 
     for p in procs:
@@ -96,7 +104,7 @@ def print_report(results, morgue, duration, mode_label):
 
     sep = "=" * 55
     print(f"\n{sep}")
-    print(f"  EXHAUSTIVE ANALYSIS  —  {mode_label}")
+    print(f"  EXHAUSTIVE ANALYSIS  --  {mode_label}")
     print(f"{sep}")
     print(f"  Words tested:  {total}")
     print(f"  Accuracy:      {acc:.4f}%  ({total - failures}/{total})")
@@ -120,7 +128,7 @@ def print_report(results, morgue, duration, mode_label):
         for word, turns in morgue[:20]:
             print(f"    {word.upper():<10} ({turns} turns)")
     else:
-        print(f"\n  THE MORGUE: empty — no failures!")
+        print(f"\n  THE MORGUE: empty - no failures!")
 
     # Also show the hardest-to-solve words (even within 6)
     sorted_all = sorted(results, key=lambda x: -x[1])[:10]
@@ -137,10 +145,39 @@ def main():
     parser.add_argument("--mode", choices=["normal", "hard", "both"], default="both")
     parser.add_argument("--silent", action="store_true")
     parser.add_argument("--save", type=str, default=None, help="Save results to CSV")
+    parser.add_argument(
+        "--samples", type=int, default=100,
+        help="Number of words to test (default: 100 for quick runs. Use --all for full set)"
+    )
+    parser.add_argument(
+        "--all", action="store_true",
+        help="Test ALL solution words (~2315). This takes hours and uses significant CPU/RAM."
+    )
+    parser.add_argument(
+        "--sequential", action="store_true",
+        help="Run single-process (no multiprocessing). Gentler on RAM."
+    )
+    parser.add_argument(
+        "--workers", type=int, default=0,
+        help="Worker count (0=auto=cpu//2, 1=sequential, 2+=explicit)"
+    )
     args = parser.parse_args()
 
+    workers = args.workers
+    if args.sequential:
+        workers = 1
+
     solutions = pd.read_csv("valid_solutions.csv").iloc[:, 0].tolist()
-    print(f"Loaded {len(solutions)} solution words")
+
+    # Sample or full
+    if args.all:
+        test_pool = solutions
+        print(f"Testing ALL {len(test_pool)} solution words -- this will take hours!")
+        print(f"Tip: use --samples N for a quicker run, or --sequential for less RAM.")
+    else:
+        n = min(args.samples, len(solutions))
+        test_pool = random.sample(solutions, n)
+        print(f"Testing {len(test_pool)} random words. Use --all to test all {len(solutions)}.")
 
     modes = [(False, "NORMAL MODE")]
     if args.mode in ("hard", "both"):
@@ -154,7 +191,7 @@ def main():
         print(f"  {label}")
         print(f"{'#' * 60}")
         t0 = time.time()
-        results, morgue = run_analysis(solutions, is_hard, args.silent)
+        results, morgue = run_analysis(test_pool, is_hard, args.silent, workers=workers)
         dur = time.time() - t0
         print_report(results, morgue, dur, label)
         all_stats.append((label, results, morgue))

@@ -11,10 +11,11 @@ hard mode, then prints a detailed report including:
   - Throughput (words/sec)
 
 Usage:
-    python benchmark.py                         # 200 samples, both modes
-    python benchmark.py --samples 500           # 500 samples
+    python benchmark.py                         # 30 samples, both modes (quick)
+    python benchmark.py --samples 200           # 200 samples
     python benchmark.py --mode hard             # hard mode only
-    python benchmark.py --mode normal --silent   # normal, silent
+    python benchmark.py --workers 2             # 2 workers (gentle)
+    python benchmark.py --sequential            # single-process, no parallelism
     python benchmark.py --json                  # machine-readable JSON output
 """
 
@@ -26,31 +27,15 @@ import sys
 import time
 
 import pandas as pd
-from Engine import WordleEngine
+
+from _game import play_one_game
 
 
 def worker_task(word_chunk, log_queue, is_hard_mode):
     """Worker process: play games for a chunk of words and report results."""
-    engine = WordleEngine()
     for target in word_chunk:
-        target = target.lower().strip()
-        engine.reset()
-        turns = 0
-        while True:
-            turns += 1
-            strat, _ = engine.get_suggestions(is_hard_mode=is_hard_mode)
-            if not strat:
-                log_queue.put((target, -1))
-                break
-            guess = strat[0]["word"]
-            if guess == target:
-                log_queue.put((target, turns))
-                break
-            pattern = engine.calculate_pattern(guess, target)
-            engine.update_state(guess, pattern)
-            if turns >= 10:
-                log_queue.put((target, 11))
-                break
+        word, turns = play_one_game(target, is_hard_mode)
+        log_queue.put((word, turns))
 
 
 def drain_queue(log_queue, total_expected, silent):
@@ -58,13 +43,14 @@ def drain_queue(log_queue, total_expected, silent):
     results = []
     morgue = []
     count = 0
+    report_interval = max(1, total_expected // 20)  # print ~20 lines total
     while count < total_expected:
         target, turns = log_queue.get()
         count += 1
         results.append(turns)
         if turns > 6 or turns <= 0:
             morgue.append(f"{target.upper()} ({turns} turns)")
-        if not silent:
+        if not silent and count % report_interval == 0:
             avg_so_far = sum(results) / len(results)
             print(
                 f"[{count:04d}/{total_expected}] | Avg: {avg_so_far:.3f} | "
@@ -77,8 +63,14 @@ def run_benchmark(
     is_hard: bool,
     silent: bool,
     seed: int | None = None,
+    workers: int = 0,
 ) -> dict:
-    """Run the benchmark and return a stats dict."""
+    """Run the benchmark and return a stats dict.
+
+    Args:
+        workers: Number of worker processes. 0 = auto (cpu_count // 2).
+                 1 = sequential (no multiprocessing).
+    """
     # Load solution words
     try:
         solutions_df = pd.read_csv("valid_solutions.csv")
@@ -91,28 +83,55 @@ def run_benchmark(
         random.seed(seed)
     test_pool = random.sample(all_words, min(len(all_words), samples))
 
-    manager = mp.Manager()
-    log_queue = manager.Queue()
+    # Determine worker count
+    if workers == 1:
+        num_workers = 1
+    elif workers > 1:
+        num_workers = min(workers, len(test_pool))
+    else:
+        # Auto: conservative default to avoid overloading
+        num_workers = max(1, mp.cpu_count() // 2)
+        # Cap at samples
+        num_workers = min(num_workers, len(test_pool))
 
-    num_cores = max(1, mp.cpu_count() - 1)
-    chunk_size = max(1, len(test_pool) // num_cores)
-    chunks = [
-        test_pool[i : i + chunk_size] for i in range(0, len(test_pool), chunk_size)
-    ]
+    if num_workers == 1:
+        # Sequential path — no multiprocessing overhead at all
+        start_time = time.time()
+        results = []
+        morgue = []
+        report_interval = max(1, len(test_pool) // 20)
+        for idx, word in enumerate(test_pool):
+            _, turns = play_one_game(word, is_hard)
+            results.append(turns)
+            if turns > 6 or turns <= 0:
+                morgue.append(f"{word.upper()} ({turns} turns)")
+            if not silent and (idx + 1) % report_interval == 0:
+                avg_so_far = sum(results) / len(results)
+                print(f"[{idx+1:04d}/{len(test_pool)}] | Avg: {avg_so_far:.3f}")
+        total_duration = time.time() - start_time
+    else:
+        # Parallel path
+        manager = mp.Manager()
+        log_queue = manager.Queue()
 
-    processes = []
-    for chunk in chunks:
-        p = mp.Process(target=worker_task, args=(chunk, log_queue, is_hard))
-        p.start()
-        processes.append(p)
+        chunk_size = max(1, len(test_pool) // num_workers)
+        chunks = [
+            test_pool[i : i + chunk_size]
+            for i in range(0, len(test_pool), chunk_size)
+        ]
 
-    # Drain the queue while workers are still running
-    start_time = time.time()
-    results, morgue = drain_queue(log_queue, len(test_pool), silent)
-    total_duration = time.time() - start_time
+        processes = []
+        for chunk in chunks:
+            p = mp.Process(target=worker_task, args=(chunk, log_queue, is_hard))
+            p.start()
+            processes.append(p)
 
-    for p in processes:
-        p.join()
+        start_time = time.time()
+        results, morgue = drain_queue(log_queue, len(test_pool), silent)
+        total_duration = time.time() - start_time
+
+        for p in processes:
+            p.join()
 
     failure_count = len(morgue)
     accuracy = ((len(test_pool) - failure_count) / len(test_pool)) * 100
@@ -176,7 +195,7 @@ def main():
         description="Wordle Solver Benchmark"
     )
     parser.add_argument(
-        "--samples", type=int, default=200, help="Number of words to test"
+        "--samples", type=int, default=30, help="Number of words to test (default: 30 for quick runs)"
     )
     parser.add_argument(
         "--mode",
@@ -193,7 +212,19 @@ def main():
     parser.add_argument(
         "--json", action="store_true", help="Output as JSON (machine-readable)"
     )
+    parser.add_argument(
+        "--workers", type=int, default=0,
+        help="Number of worker processes (0=auto=cpu//2, 1=sequential, 2+ = explicit)"
+    )
+    parser.add_argument(
+        "--sequential", action="store_true",
+        help="Run single-process (no multiprocessing). Equivalent to --workers 1"
+    )
     args = parser.parse_args()
+
+    workers = args.workers
+    if args.sequential:
+        workers = 1
 
     modes = []
     if args.mode in ("normal", "both"):
@@ -208,6 +239,7 @@ def main():
             is_hard=is_hard,
             silent=args.silent,
             seed=args.seed,
+            workers=workers,
         )
         all_stats.append(stats)
         if not args.json:

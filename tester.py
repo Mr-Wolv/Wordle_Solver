@@ -1,119 +1,66 @@
 """
-This script is meant for my own local testing and CI/CD future testing. to run this script outside its default parameters, in terminal run:
-`python tester.py --mode hard --samples 500 --silent`
-to test 500 random words in hard mode with only the final report printed (silent). Adjust parameters as needed.
+Legacy tester — kept for backwards compatibility.
+
+Prefer the newer tools:
+    python benchmark.py           # comprehensive benchmark
+    python analyze_failures.py    # edge-case / worst-word analysis
+
+Usage:
+    python tester.py                          # 50 samples, normal, sequential
+    python tester.py --mode hard --samples 200
+    python tester.py --silent
 """
 
-import pandas as pd
-import multiprocessing as mp
-from Engine import WordleEngine
-import random
 import argparse
+import random
 import sys
 import time
 
-
-def worker_task(word_chunk, log_queue, is_hard_mode):
-    engine = WordleEngine()
-    for target in word_chunk:
-        target = target.lower().strip()
-        engine.reset()
-        turns = 0
-        while True:
-            turns += 1
-            strat, _ = engine.get_suggestions(is_hard_mode=is_hard_mode)
-            if not strat:
-                log_queue.put((target, -1))
-                break
-            guess = strat[0]["word"]
-            if guess == target:
-                log_queue.put((target, turns))
-                break
-            pattern = engine.calculate_pattern(guess, target)
-            engine.update_state(guess, pattern)
-            if turns >= 10:
-                log_queue.put((target, 11))
-                break
-
-
-def listener_task(log_queue, total_expected, is_hard_mode, silent):
-    count = 0
-    results = []
-    morgue = []
-    start_time = time.time()
-
-    while count < total_expected:
-        target, turns = log_queue.get()
-        count += 1
-        results.append(turns)
-
-        if turns > 6 or turns <= 0:
-            morgue.append(f"{target.upper()} ({turns} turns)")
-
-        # Use the silent flag to control real-time logging
-        if not silent:
-            avg_so_far = sum(results) / len(results)
-            print(
-                f"[PROFILING: {count:04d}/{total_expected}] | Avg: {avg_so_far:.3f} | Last: {target.upper()}"
-            )
-
-    total_duration = time.time() - start_time
-    failure_count = len(morgue)
-    accuracy = ((total_expected - failure_count) / total_expected) * 100
-    avg_turns = sum(results) / len(results) if results else 0
-
-    sep = "=" * 50
-    print(f"\n{sep}")
-    print(f"PROFILING REPORT: {'HARD' if is_hard_mode else 'NORMAL'} MODE")
-    print(f"TEST ACCURACY: {accuracy:.2f}% | AVG TURNS: {avg_turns:.4f}")
-    print(f"TOTAL WORDS: {total_expected} | FAILURES: {failure_count}")
-    print(f"THROUGHPUT: {total_expected / total_duration:.2f} words/sec")
-
-    if morgue:
-        print(f"THE MORGUE: {', '.join(morgue)}")
-    print(sep)
-
-    sys.exit(0)
+import pandas as pd
+from _game import play_one_game
 
 
 if __name__ == "__main__":
-    parser = argparse.ArgumentParser(description="Beast Engine Benchmarker")
+    parser = argparse.ArgumentParser(description="Legacy Wordle Tester")
     parser.add_argument("--mode", choices=["hard", "normal"], default="normal")
-    parser.add_argument("--samples", type=int, default=200)
+    parser.add_argument("--samples", type=int, default=50, help="Words to test (default: 50, was 200)")
     parser.add_argument("--silent", action="store_true", help="Only show final report")
     args = parser.parse_args()
 
-    # Load data
     try:
         solutions_df = pd.read_csv("valid_solutions.csv")
         all_words = solutions_df.iloc[:, 0].tolist()
-        test_pool = random.sample(all_words, min(len(all_words), args.samples))
     except Exception as e:
         print(f"Error loading words: {e}")
         sys.exit(1)
 
-    manager = mp.Manager()
-    log_queue = manager.Queue()
+    test_pool = random.sample(all_words, min(len(all_words), args.samples))
     is_hard = args.mode == "hard"
 
-    num_cores = max(1, mp.cpu_count() - 1)
-    # Ensure chunking handles small sample sizes correctly
-    chunk_size = max(1, len(test_pool) // num_cores)
-    chunks = [
-        test_pool[i : i + chunk_size] for i in range(0, len(test_pool), chunk_size)
-    ]
+    results = []
+    morgue = []
+    start_time = time.time()
 
-    listener = mp.Process(
-        target=listener_task, args=(log_queue, len(test_pool), is_hard, args.silent)
-    )
-    listener.start()
+    for idx, word in enumerate(test_pool):
+        _, turns = play_one_game(word, is_hard)
+        results.append(turns)
+        if turns > 6 or turns <= 0:
+            morgue.append(f"{word.upper()} ({turns} turns)")
+        if not args.silent and (idx + 1) % max(1, len(test_pool) // 20) == 0:
+            avg = sum(results) / len(results)
+            print(f"[{idx+1:04d}/{len(test_pool)}] | Avg: {avg:.3f}")
 
-    processes = []
-    for chunk in chunks:
-        p = mp.Process(target=worker_task, args=(chunk, log_queue, is_hard))
-        p.start()
-        processes.append(p)
+    total_duration = time.time() - start_time
+    failure_count = len(morgue)
+    accuracy = ((len(test_pool) - failure_count) / len(test_pool)) * 100
+    avg_turns = sum(results) / len(results) if results else 0
 
-    for p in processes:
-        p.join()
-    listener.join()
+    sep = "=" * 50
+    print(f"\n{sep}")
+    print(f"TEST REPORT: {'HARD' if is_hard else 'NORMAL'} MODE")
+    print(f"ACCURACY: {accuracy:.2f}% | AVG TURNS: {avg_turns:.4f}")
+    print(f"WORDS: {len(test_pool)} | FAILURES: {failure_count}")
+    print(f"THROUGHPUT: {len(test_pool) / total_duration:.2f} words/sec")
+    if morgue:
+        print(f"MORGUE: {', '.join(morgue)}")
+    print(sep)

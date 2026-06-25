@@ -21,4 +21,5 @@ setuptools==82.0.1
 six==1.17.0
 tzdata==2026.2
 wcwidth==0.7.0
+pytest>=7.0
 wordfreq==3.1.1
