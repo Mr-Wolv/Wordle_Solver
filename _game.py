@@ -32,8 +32,8 @@ def play_one_game(
 
     Returns:
         (word, -1)   – engine returned no suggestions (shouldn't happen)
-        (word, 1..6) – solved in that many turns
-        (word, 11)   – hit the 10-turn safety limit → failure
+        (word, 1..6) – solved in that many turns (a Wordle win)
+        (word, 7)    – not solved within the 6-guess limit → failure
     """
     engine = WordleEngine()  # __init__ already calls reset()
     target = target.lower().strip()
@@ -65,5 +65,6 @@ def play_one_game(
             return (target, turns)
         pattern = engine.calculate_pattern(guess, target)
         engine.update_state(guess, pattern)
-        if turns >= 10:
-            return (target, 11)
+        if turns >= 6:
+            # Wordle allows exactly 6 guesses. Exhausted without a win.
+            return (target, 7)

@@ -142,13 +142,13 @@ def run_benchmark(
 
     # Turn distribution
     dist = {}
-    for t in range(1, 11):
+    for t in range(1, 8):
         n = results.count(t)
         if n > 0:
             dist[t] = n
-    fail_n = results.count(11)
+    fail_n = results.count(7)
     if fail_n:
-        dist["7+ (fail)"] = fail_n
+        dist["7 (fail)"] = fail_n
 
     return {
         "mode": "HARD" if is_hard else "NORMAL",
