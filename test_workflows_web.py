@@ -22,15 +22,34 @@ Workflows covered (each has a happy path and at least one unhappy path):
   W14 Forced-optimal note    (hard+hints -> single SOLVE entry explained)
   W15 Keyboard ergonomics    (Enter in hint field logs hint)
 
-Run with the live server on :8000:  python -m pytest test_workflows_web.py -q
+Run with chromium installed (the suite self-skips otherwise):
+    python -m pytest test_workflows_web.py -q
+The module boots its own web_server on an ephemeral port, so no external
+server needs to be running.
 """
 
 import os
+import socket
+import threading
 
 import pytest
+import uvicorn
 from playwright.sync_api import sync_playwright
 
-BASE = os.environ.get("BASE_URL", "http://127.0.0.1:8000")
+# ── Browser/CI guard ──────────────────────────────────────────────
+# Mirrors test_e2e_web.py: the workflow suite drives the REAL DOM with
+# Playwright, so it can only run where chromium is installed. On hosts
+# without it (restricted networks, headless CI without the binary) the
+# whole module is skipped at collection time — exactly like the e2e suite
+# — so `pytest` stays green instead of erroring on a missing browser.
+_BROWSER_DIR = os.path.join(os.path.expanduser("~"), ".cache", "ms-playwright")
+_chromium_present = os.path.isdir(_BROWSER_DIR) and any(
+    n.startswith("chromium") for n in os.listdir(_BROWSER_DIR)
+)
+pytestmark = pytest.mark.skipif(
+    not _chromium_present,
+    reason="Playwright chromium not installed (`playwright install chromium`)",
+)
 
 # real 5-letter answer secrets used to drive deterministic colorings
 SECRET = {
@@ -38,6 +57,44 @@ SECRET = {
     "slate": "slate",
     "mouse": "mouse",
 }
+
+
+def _free_port() -> int:
+    s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    s.bind(("127.0.0.1", 0))
+    port = s.getsockname()[1]
+    s.close()
+    return port
+
+
+@pytest.fixture(scope="module")
+def base_url():
+    """Boot the real FastAPI backend on an ephemeral port for the run.
+
+    The workflow tests assert against the live server DOM (just like a
+    human would), so we stand up web_server ourselves instead of assuming
+    something is already listening on :8000. The engine is bound to the
+    chosen port so the per-instance turn-1 cache file can't collide with a
+    dev server the user might have running elsewhere.
+    """
+    import web_server as backend
+
+    port = _free_port()
+    backend.configure_engine(port)
+    server = uvicorn.Server(
+        uvicorn.Config(backend.app, host="127.0.0.1", port=port, log_level="error")
+    )
+    thread = threading.Thread(target=server.run, daemon=True)
+    thread.start()
+    # wait for the port to come up (cheap readiness check)
+    for _ in range(100):
+        try:
+            with socket.create_connection(("127.0.0.1", port), timeout=0.5):
+                break
+        except OSError:
+            if not thread.is_alive():
+                raise RuntimeError("web_server failed to start")
+    return f"http://127.0.0.1:{port}"
 
 
 def _set(page, idx, state):
@@ -76,9 +133,9 @@ def browser():
 
 
 @pytest.fixture
-def page(browser):
+def page(browser, base_url):
     pg = browser.new_page()
-    pg.goto(BASE)
+    pg.goto(base_url)
     pg.evaluate("window.app.reset()")
     pg.wait_for_timeout(120)
     yield pg

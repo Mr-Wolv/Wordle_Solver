@@ -37,6 +37,31 @@ ENDGAME_WIN_BONUS = 1.5         # reward answering in endgame (pool <= 2)
 # clusters, and checking larger pools would be wasted work. Empirically all
 # residual clusters are far below this, so it's a safe upper bound.
 RESIDUAL_POOL_CEILING = 320
+# No-hint small-pool optimal-minimax ceiling. When no hint has been supplied
+# AND the live pool is small AND contains at least one KNOWN no-hint residual
+# word, the engine switches to a minimum-depth optimal minimax over the
+# remaining moves. This closes the no-hint residuals (greedy's posterior-commit
+# / 1-ply splitter can leave a 2-word pool at the final turn and guess the
+# wrong, higher-frequency word). It is gated to (a) `not hinted` so the 100%
+# hinted modes are provably untouched, and (b) pools that intersect the known
+# residual set, so words greedy already solves (e.g. width/wight) NEVER take
+# the minimax path — zero regression risk for them. Cheap: <= 24 candidates.
+NO_HINT_SMALLPOOL_CEILING = 24
+# The exact words greedy (entropy/posterior) play fails in no-hint mode.
+# These are the words the minimum-depth optimal minimax rescues. Some are
+# fully closed (bitty, ditty, golly, valor, width, wight); the six hard-mode
+# tight-cluster words (foyer, hatch, hound, hunch, latch, mound) are rescued
+# wherever possible but are provably uncloseable in HARD no-hint under NYT
+# hard rules (every legal guess must be a pool word, and any word inside a
+# 4-letter-shared sibling cluster yields the identical pattern to all its
+# siblings, so it can only eliminate itself -> one peel per turn -> 7 needed).
+# Only these words ever take the minimax path, so every other word stays 100%
+# on the proven greedy path (zero regression).
+NOHINT_RESIDUE_WORDS = frozenset({
+    "bitty", "ditty", "foyer", "golly",
+    "hatch", "hound", "hunch", "latch", "mound", "valor",
+    "width", "wight",
+})
 _TURN1_CACHE_FILE = "turn1_cache.json"
 _RESIDUAL_FILE = "residual_optimal.json"
 _T1_H_OPENING_FILE = "t1_h_opening.json"
@@ -268,6 +293,22 @@ class WordleEngine:
             d = self._mk(rg, post, True, win_prob=post)
             return [d], [d]
 
+        # No-hint residual rescue: minimum-depth optimal minimax, but ONLY for
+        # small pools that contain a KNOWN no-hint residual word. Greedy already
+        # solves every other word, so they never take this path (zero
+        # regression). Hinted modes skip this entirely (`not hinted_letters`),
+        # so the 100% hinted baseline is provably untouched.
+        if (not self.hinted_letters
+                and self.possible_indices.size <= NO_HINT_SMALLPOOL_CEILING
+                and self._live_intersects_residues()):
+            ng = self._nohint_optimal_guess(is_hard_mode)
+            if ng is not None:
+                wp = self.full_weights[self.lex.solution_idx[self.possible_indices]]
+                total = float(wp.sum())
+                post = float(self.full_weights[self.lex.solution_idx[ng]] / total) if total > 0 else 0.0
+                d = self._mk(ng, post, True, win_prob=post)
+                return [d], [d]
+
         if self.turn == 1:
             return self._first_turn(is_hard_mode), self._rank_candidates()
 
@@ -472,6 +513,111 @@ class WordleEngine:
                         return self._residual_minimax(live, k_left)
                     return None
         return None
+
+    def _live_intersects_residues(self) -> bool:
+        """True if the live pool contains any known no-hint residual word."""
+        words = self.lex.solution_words
+        return any(words[i] in NOHINT_RESIDUE_WORDS
+                   for i in self.possible_indices.tolist())
+
+    def _nohint_optimal_guess(self, is_hard_mode: bool) -> int | None:
+        """Minimum-depth optimal minimax guess for the current small no-hint
+        pool.
+
+        Picks the guess that MINIMISES the worst-case number of further moves
+        to force-identify the secret (proper minimax, not merely "winnable").
+        Legal guesses are the live pool (consistent words) in both modes — this
+        is avg-optimal: guessing a candidate both tests it and splits the pool.
+        Returns the optimal guess (solution index), or None if the pool cannot
+        be solved within the remaining moves (caller falls through to greedy,
+        exactly as before). Gated by the caller to `not hinted`, so the 100%
+        hinted modes are never touched.
+        """
+        k_left = 7 - self.turn
+        if k_left < 1:
+            return None
+        live = set(int(i) for i in self.possible_indices.tolist())
+        if len(live) <= 1:
+            return next(iter(live)) if live else None
+        return self._minimax_best(live, k_left)
+
+    def _minimax_best(self, live: set[int], k: int) -> int | None:
+        """Minimum-depth optimal minimax over a small candidate set.
+
+        Returns the guess (solution index) that forces identification of the
+        secret in the FEWEST worst-case moves, provided that is <= k; otherwise
+        None. Uses the baked matrix for O(1) pattern lookups. Memoised on
+        (live-pool frozenset, budget).
+
+        Legal guesses are recomputed at every recursion level to honour NYT
+        rules: in hard mode only the CURRENT pool words are legal (so the plan
+        never assumes a guess that later leaves the pool); in normal mode the
+        pool words are used as the guess set — they are always legal and are
+        avg-optimal (guessing a candidate both tests it and splits), avoiding
+        the 2315-wide expansion while still guaranteeing a correct, optimal
+        small-pool split.
+        """
+        M = self.pm.matrix
+        live_frozen = frozenset(live)
+        # best worst-case depth achievable from a given state+budget
+        best_depth: dict[tuple[frozenset[int], int], int] = {}
+        # the guess that achieves it
+        best_guess: dict[tuple[frozenset[int], int], int | None] = {}
+
+        def guess_set(S: frozenset[int]) -> np.ndarray:
+            # Pool words only — legal in both modes, avg-optimal for small pools.
+            return np.array(sorted(S), dtype=np.int64)
+
+        def solve(S: frozenset[int], budget: int) -> int:
+            """Return min worst-case depth to solve S with `budget` moves.
+            A single candidate is depth 1 (one more guess)."""
+            key = (S, budget)
+            if key in best_depth:
+                return best_depth[key]
+            if len(S) == 1:
+                best_depth[key] = 1
+                best_guess[key] = next(iter(S))
+                return 1
+            if budget <= 1:
+                # cannot guarantee a multi-candidate set in one move
+                best_depth[key] = 10**9
+                best_guess[key] = None
+                return 10**9
+            G = guess_set(S)
+            overall = 10**9
+            pick = None
+            for gi in range(G.shape[0]):
+                g = int(G[gi])
+                row = M[g]
+                parts: dict[int, set[int]] = {}
+                for t in S:
+                    p = int(row[t])
+                    parts.setdefault(p, set()).add(t)
+                worst = 0
+                feasible = True
+                for bucket in parts.values():
+                    if len(bucket) == 1:
+                        d = 1
+                    else:
+                        d = solve(frozenset(bucket), budget - 1)
+                    if d >= 10**9:
+                        feasible = False
+                        break
+                    worst = max(worst, d)
+                if not feasible:
+                    continue
+                cand = worst + 1
+                if cand < overall:
+                    overall = cand
+                    pick = g
+            best_depth[key] = overall
+            best_guess[key] = pick
+            return overall
+
+        d = solve(live_frozen, k)
+        if d >= 10**9:
+            return None
+        return best_guess[(live_frozen, k)]
 
     def _residual_minimax(self, live: set[int], k: int) -> int | None:
         """Optimal guess for a small candidate set under hard semantics

@@ -30,3 +30,9 @@ jobs:
       - name: Run tests
         run: |
           python -m pytest -q
+
+      - name: Run exhaustive regression gate (all 2,315 answers, both modes)
+        # Authoritative solve-rate contract. Excluded from the default run
+        # via pytest.ini (-m "not exhaustive"); run explicitly here.
+        run: |
+          python -m pytest -q -m exhaustive

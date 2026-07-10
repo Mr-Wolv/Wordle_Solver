@@ -57,10 +57,14 @@ jobs:
       run: |
         pyinstaller --noconfirm --clean desktop_app.spec
 
+    # NOTE: intentionally NO artifact upload. The user requires the app to be
+    # reproducible from source anywhere, so the build above is the proof of
+    # reproducibility — we do NOT attach a prebuilt .exe to the release. The
+    # release page is still created (below) for the tag.
+
     - name: Create GitHub Release
       uses: softprops/action-gh-release@v3
       with:
-        files: dist/Wordle-Strat-Console.exe
         name: Release ${{ github.ref_name }}
         draft: false
         prerelease: false
