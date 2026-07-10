@@ -27,6 +27,17 @@ jobs:
           # is absent, so CI stays green even without this download.
           python -m playwright install chromium || echo "chromium install skipped"
 
+      - name: Generate data + pattern matrix (engine cannot import without these)
+        # The engine loads scientific_word_data.csv / wordle_full_matrix.npy at
+        # import time, so they must exist before any test collects. Mirrors the
+        # generation steps used by build-exe.yml.
+        run: |
+          python Data.py
+          python build_matrix.py
+          python -c "from Engine import WordleEngine; e=WordleEngine(); e.get_suggestions(); e.get_suggestions(is_hard_mode=True)"
+          python build_residual_optimal.py
+          python find_t1_h.py
+
       - name: Run tests
         run: |
           python -m pytest -q
