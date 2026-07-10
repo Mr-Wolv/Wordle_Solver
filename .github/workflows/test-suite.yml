@@ -28,14 +28,14 @@ jobs:
           python -m playwright install chromium || echo "chromium install skipped"
 
       - name: Generate data + pattern matrix (engine cannot import without these)
-        # scientific_word_data.csv and residual_optimal.json are committed
-        # (generated once, deterministic) so CI does NOT need the slow network
-        # wordfreq fetch (Data.py) nor the ~5-min build_residual_optimal.py.
-        # We only (re)build the fast derivable artifacts from the committed CSV.
+        # scientific_word_data.csv, residual_optimal.json and t1_h_opening.json
+        # are committed (generated once, deterministic) so CI does NOT run the
+        # slow network Data.py (wordfreq), the ~5-min build_residual_optimal.py,
+        # or the multi-hour find_t1_h.py brute-force prover. We only (re)build
+        # the fast derivable artifacts from the committed CSV.
         run: |
           python build_matrix.py
           python -c "from Engine import WordleEngine; e=WordleEngine(); e.get_suggestions(); e.get_suggestions(is_hard_mode=True)"
-          python find_t1_h.py
 
       - name: Run tests
         run: |
