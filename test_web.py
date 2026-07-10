@@ -46,7 +46,7 @@ def test_win_path():
     _reset()
     # CRANE all-green -> one guess win
     r = client.post("/api/submit", json={"guess": "crane", "colors": [2, 2, 2, 2, 2]}).json()
-    assert r["won"] is True
+    assert r["solved"] is True
     assert r["turn"] == 2  # advanced to the (would-be) next turn
     assert r["solved"] is True
     assert r["pool"] == 1
@@ -57,7 +57,7 @@ def test_nonwin_narrows_pool():
     # SLATE with pattern absent,present,correct,absent,absent
     colors = [0, 1, 2, 0, 0]
     r = client.post("/api/submit", json={"guess": "slate", "colors": colors}).json()
-    assert r["won"] is False
+    assert r["solved"] is False
     assert r["turn"] == 2
     assert 0 < r["pool"] < 2315  # pool collapsed
     # hard toggle is now locked (turn 2 > 1)

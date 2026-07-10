@@ -1,0 +1,32 @@
+name: Test Suite
+
+on:
+  push:
+    branches: ["**"]          # run on every push, any branch
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  test:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: "pip"
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+          # Playwright is in requirements.txt; install only its browser when
+          # the e2e tests are enabled. The e2e suite auto-skips if the browser
+          # is absent, so CI stays green even without this download.
+          python -m playwright install chromium || echo "chromium install skipped"
+
+      - name: Run tests
+        run: |
+          python -m pytest -q

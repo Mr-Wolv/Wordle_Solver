@@ -38,6 +38,24 @@ MAX_HINTS = 2  # NYT rule: exactly one consonant AND one vowel
 # view state the UI needs to render controls).
 app = FastAPI(title="Wordle Strat-Console")
 engine = Engine.WordleEngine()
+
+
+def configure_engine(port: int) -> None:
+    """Bind the engine to the desktop app's chosen port (per-instance cache).
+
+    Guarded so a second call in the same process can't silently move the
+    cache file out from under an already-running game.
+    """
+    if getattr(engine, "_port", None) not in (None, port):
+        import logging
+        logging.getLogger(__name__).warning(
+            "engine port already set to %s, ignoring re-bind to %s",
+            engine._port, port,
+        )
+        return
+    engine._port = port
+
+
 hard_mode = False  # local flag mirrored into get_suggestions(is_hard_mode=...)
 won_flag = False   # sticky win state so the banner survives a page refresh
 
@@ -87,7 +105,6 @@ def _state() -> dict:
         "strat": strat[:12],
         "cands": cands[:12],
         "specialist": specialist,
-        "won": won_flag,
         "solved": won_flag,
     }
 
@@ -156,7 +173,7 @@ def submit_move(move: Move) -> dict:
     won_flag = move.colors == [2, 2, 2, 2, 2]
     state = _state()
     state["last_guess"] = guess
-    state["won"] = won_flag
+    state["solved"] = won_flag
     return state
 
 

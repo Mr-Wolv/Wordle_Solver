@@ -32,6 +32,11 @@ HARD_PENALTY_PER_TURN = 1.7     # hard escalation per turn
 HARD_MAX_PENALTY = 10.0         # hard ceiling
 WIN_BONUS_WEIGHT = 0.3          # reward answering when pool is large
 ENDGAME_WIN_BONUS = 1.5         # reward answering in endgame (pool <= 2)
+# Hard-mode residual specialist only engages once the live pool has collapsed
+# to this size: the precomputed optimal-minimax trees are built for small
+# clusters, and checking larger pools would be wasted work. Empirically all
+# residual clusters are far below this, so it's a safe upper bound.
+RESIDUAL_POOL_CEILING = 320
 _TURN1_CACHE_FILE = "turn1_cache.json"
 _RESIDUAL_FILE = "residual_optimal.json"
 _T1_H_OPENING_FILE = "t1_h_opening.json"
@@ -199,8 +204,9 @@ class WordleEngine:
             return False  # would exceed one vowel
         if letter in CONSONANTS and nc >= 1:
             return False  # would exceed one consonant
-        mask = np.array(
-            [letter in self.lex.solution_words[i] for i in range(self.n_sol)]
+        mask = np.fromiter(
+            (letter in self.lex.solution_words[i] for i in range(self.n_sol)),
+            dtype=bool, count=self.n_sol,
         )
         new_mask = self.hint_mask & mask
         keep = np.where(new_mask & self.possible_mask)[0]
@@ -454,7 +460,7 @@ class WordleEngine:
         # precomputed residual cluster. Look up the exact optimal guess; fall
         # back to a correct-depth minimax if the node is off-tree. Greedy
         # remains the default hot path everywhere else.
-        if len(live) <= 320:
+        if len(live) <= RESIDUAL_POOL_CEILING:
             for pool, cl in self._residual_optimal.items():
                 if live.issubset(pool):
                     key = ",".join(str(i) for i in sorted(live))

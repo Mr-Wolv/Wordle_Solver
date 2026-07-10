@@ -198,7 +198,7 @@ def boot(window) -> bool:
             # Tag the engine with this port so its turn-1 cache file is
             # per-instance (two dev instances never write the same file).
             try:
-                web_server.engine._port = port
+                web_server.configure_engine(port)
             except Exception:
                 pass
             web_server.set_load_status("Warming up solver…")
