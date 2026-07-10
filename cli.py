@@ -89,12 +89,25 @@ def interactive_mode(is_hard: bool):
                     print(f"\n  >> ANSWER: {answer.upper()}!")
                 break
 
-            guess = input(f"\n  Enter your guess (or /reset, /quit): ").strip().lower()
+            guess = input(f"\n  Enter your guess (or /reset, /quit, /hint <letter>): ").strip().lower()
             if guess == "/quit":
                 print("  Goodbye!")
                 return
             if guess == "/reset":
                 break
+
+            if guess.startswith("/hint"):
+                parts = guess.split()
+                if len(parts) != 2 or len(parts[1]) != 1 or not parts[1].isalpha():
+                    print("  Usage: /hint <letter>   (e.g. /hint e)")
+                    continue
+                ok = engine.add_hint(parts[1])
+                if not ok:
+                    print(f"  Hint '{parts[1].upper()}' contradicts the current pool — ignored.")
+                    continue
+                print(f"  Hint registered: answer contains '{parts[1].upper()}'.")
+                show_suggestions(engine, is_hard)
+                continue
 
             if len(guess) != 5 or not guess.isalpha():
                 print("  Invalid guess — must be 5 letters.")

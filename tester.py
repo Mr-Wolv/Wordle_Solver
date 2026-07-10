@@ -3,7 +3,7 @@ Legacy tester — kept for backwards compatibility.
 
 Prefer the newer tools:
     python benchmark.py           # comprehensive benchmark
-    python analyze_failures.py    # edge-case / worst-word analysis
+    python profiler.py            # cProfile hot-spot analysis
 
 Usage:
     python tester.py                          # 50 samples, normal, sequential

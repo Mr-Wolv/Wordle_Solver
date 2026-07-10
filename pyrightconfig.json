@@ -1,0 +1,9 @@
+{
+  "include": ["."],
+  "exclude": ["**/__pycache__", "**/.venv", "**/node_modules"],
+  "venvPath": ".",
+  "venv": ".venv",
+  "typeCheckingMode": "basic",
+  "reportAttributeAccessIssue": "none",
+  "reportArgumentType": "none"
+}

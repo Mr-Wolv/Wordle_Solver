@@ -31,7 +31,7 @@ jobs:
     - name: Generate Data and Matrix
       run: |
         python Data.py
-        python Matrix_init.py
+        python build_matrix.py
 
     - name: Generate Turn-1 Cache (preload)
       run: |
@@ -39,15 +39,23 @@ jobs:
         # so the exe starts instantly with zero delay
         python -c "from Engine import WordleEngine; e=WordleEngine(); e.get_suggestions(); e.get_suggestions(is_hard_mode=True)"
 
-    - name: Build with PyInstaller
+    - name: Generate Residual Optimal Specialist
       run: |
-        pyinstaller --noconsole --onefile --clean `
-         --name "Wordle-Strat-Console" `
-         --icon "icon.ico" `
-         --add-data "scientific_word_data.csv;." `
-         --add-data "wordle_full_matrix.npy;." `
-         --add-data "turn1_cache.json;." `
-         GUI.py
+        # Builds residual_optimal.json (precomputed optimal-minimax trees for
+        # the hard+hint residual clusters the greedy solver cannot close).
+        python build_residual_optimal.py
+
+    - name: Generate Turn-1 'h' Family-Safe Opening
+      run: |
+        # Builds t1_h_opening.json: a single solution index proven (via
+        # find_t1_h.py) to solve every 'h'-containing answer word under HARD +
+        # NYT hints. Used to close the lone `hatch` residual at turn 1 without
+        # affecting any non-'h' family.
+        python find_t1_h.py
+
+    - name: Build with PyInstaller (WebView2 desktop app)
+      run: |
+        pyinstaller --noconfirm --clean desktop_app.spec
 
     - name: Create GitHub Release
       uses: softprops/action-gh-release@v3

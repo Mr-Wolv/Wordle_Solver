@@ -183,3 +183,6 @@ cython_debug/
 /wordle_full_matrix.npy
 /scientific_word_data.csv
 /turn1_cache.json
+/residual_optimal.json
+/t1_h_opening.json
+find_t1_h.log

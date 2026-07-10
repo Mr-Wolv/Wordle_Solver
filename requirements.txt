@@ -2,9 +2,14 @@
 # Requires Python 3.12
 
 altgraph==0.17.5
-customtkinter==5.2.2
-darkdetect==0.8.0
-ftfy==6.3.1
+flet==0.85.3
+fastapi==0.139.0
+uvicorn==0.51.0
+pywebview==6.2.1  # native desktop wrapper (WebView2 on Windows)
+playwright==1.61.0
+pytest>=7.0
+wordfreq==3.1.1
+
 langcodes==3.5.1
 locate==1.1.1
 msgpack==1.1.2
@@ -21,5 +26,3 @@ setuptools==82.0.1
 six==1.17.0
 tzdata==2026.2
 wcwidth==0.7.0
-pytest>=7.0
-wordfreq==3.1.1

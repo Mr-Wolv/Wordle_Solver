@@ -1,0 +1,68 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>Wordle Strat-Console</title>
+<style>
+  :root { --bg:#0b0e14; --panel:#161d2b; --green:#34d27b; --subtle:#9aa7bd; --faint:#6b788f; }
+  * { box-sizing: border-box; }
+  html, body { margin:0; height:100%; background:var(--bg); color:#eef2f8;
+    font-family:"Segoe UI",system-ui,-apple-system,sans-serif; overflow:hidden; }
+  .wrap { height:100%; display:flex; flex-direction:column; align-items:center; justify-content:center; gap:22px; }
+  .mark { width:84px; height:84px; border-radius:18px; display:flex; align-items:center; justify-content:center;
+    background:var(--panel); border:1px solid #283142; font-size:40px; color:var(--green); box-shadow:0 8px 30px rgba(0,0,0,.4); }
+  .title { letter-spacing:3px; font-size:18px; color:var(--subtle); }
+  .title b { color:#eef2f8; }
+  .spinner { width:34px; height:34px; border:3px solid #283142; border-top-color:var(--green);
+    border-radius:50%; animation:spin .8s linear infinite; }
+  @keyframes spin { to { transform:rotate(360deg); } }
+  .status { font-size:12px; color:var(--faint); min-height:16px; letter-spacing:.5px; }
+</style>
+</head>
+<body>
+  <div class="wrap">
+    <div class="mark">◆</div>
+    <div class="title">WORDLE <b>STRAT-CONSOLE</b></div>
+    <div class="spinner"></div>
+    <div class="status" id="status">Loading the solver…</div>
+  </div>
+  <script>
+    // The loader tells us which port the backend will listen on. We start with
+    // the ?port= from the window URL, and boot() may move it (via __setPort).
+    function getPort() {
+      // Port arrives via #hash. file:// URIs do NOT support ?query strings —
+      // WebView2 would look for a file named "splash.html?port=…" and report
+      // "file not found". boot() also corrects it live via __setPort.
+      try {
+        const h = new URLSearchParams(location.hash.replace(/^#/, ""));
+        const p = parseInt(h.get("port"), 10);
+        if (p > 0) return p;
+      } catch (e) {}
+      return 8753;
+    }
+    let PORT = getPort();
+    window.__setPort = (p) => { PORT = p; };
+
+    const el = document.getElementById("status");
+    if (location.hash.includes("closing")) {
+      // Closing splash: no polling, just a calm "shutting down" beat.
+      el.textContent = "Shutting down…";
+      document.querySelector(".title").innerHTML = "WORDLE <b>STRAT-CONSOLE</b>";
+      document.title = "Shutting down…";
+    } else {
+      async function poll() {
+        try {
+          const r = await fetch(`http://127.0.0.1:${PORT}/api/load-status`, {cache:"no-store"});
+          if (r.ok) {
+            const j = await r.json();
+            if (j && j.text) el.textContent = j.text;
+          }
+        } catch (e) { /* server not up yet — keep current text */ }
+        setTimeout(poll, 300);
+      }
+      poll();
+    }
+  </script>
+</body>
+</html>

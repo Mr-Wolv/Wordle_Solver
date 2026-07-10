@@ -31,10 +31,10 @@ import pandas as pd
 from _game import play_one_game
 
 
-def worker_task(word_chunk, log_queue, is_hard_mode):
+def worker_task(word_chunk, log_queue, is_hard_mode, use_hints):
     """Worker process: play games for a chunk of words and report results."""
     for target in word_chunk:
-        word, turns = play_one_game(target, is_hard_mode)
+        word, turns = play_one_game(target, is_hard_mode, hints=use_hints)
         log_queue.put((word, turns))
 
 
@@ -64,12 +64,15 @@ def run_benchmark(
     silent: bool,
     seed: int | None = None,
     workers: int = 0,
+    use_hints: bool = False,
 ) -> dict:
     """Run the benchmark and return a stats dict.
 
     Args:
         workers: Number of worker processes. 0 = auto (cpu_count // 2).
                  1 = sequential (no multiprocessing).
+        use_hints: Simulate the NYT hint button (engine told the secret's
+                 unique letters as external hints), matching real play.
     """
     # Load solution words
     try:
@@ -101,7 +104,7 @@ def run_benchmark(
         morgue = []
         report_interval = max(1, len(test_pool) // 20)
         for idx, word in enumerate(test_pool):
-            _, turns = play_one_game(word, is_hard)
+            _, turns = play_one_game(word, is_hard, hints=use_hints)
             results.append(turns)
             if turns > 6 or turns <= 0:
                 morgue.append(f"{word.upper()} ({turns} turns)")
@@ -122,7 +125,7 @@ def run_benchmark(
 
         processes = []
         for chunk in chunks:
-            p = mp.Process(target=worker_task, args=(chunk, log_queue, is_hard))
+            p = mp.Process(target=worker_task, args=(chunk, log_queue, is_hard, use_hints))
             p.start()
             processes.append(p)
 
@@ -149,8 +152,12 @@ def run_benchmark(
 
     return {
         "mode": "HARD" if is_hard else "NORMAL",
+        "hints": use_hints,
         "samples": len(test_pool),
-        "accuracy": round(accuracy, 2),
+        # Accuracy here is the engine's OPTIMAL-PLAY CEILING: the solver
+        # plays perfectly from turn 1 with no human error. It is NOT a
+        # prediction of real human play (see --hints / the README).
+        "optimal_play_accuracy": round(accuracy, 2),
         "avg_turns": round(avg_turns, 4),
         "failures": failure_count,
         "throughput": round(len(test_pool) / total_duration, 2),
@@ -163,11 +170,13 @@ def run_benchmark(
 def print_report(stats: dict):
     """Print a formatted benchmark report."""
     sep = "=" * 55
+    hint_tag = " (WITH HINTS)" if stats.get("hints") else ""
     print(f"\n{sep}")
-    print(f"  WORDLE SOLVER BENCHMARK  —  {stats['mode']} MODE")
+    print(f"  WORDLE SOLVER BENCHMARK  —  {stats['mode']} MODE{hint_tag}")
     print(f"{sep}")
-    print(f"  Accuracy:       {stats['accuracy']:.2f}%  "
+    print(f"  Optimal-play accuracy: {stats['optimal_play_accuracy']:.2f}%  "
           f"({stats['samples'] - stats['failures']}/{stats['samples']})")
+    print(f"    (ceiling: solver plays perfectly; not a human-play predictor)")
     print(f"  Avg turns:      {stats['avg_turns']:.4f}")
     print(f"  Failures:       {stats['failures']}")
     print(f"  Throughput:     {stats['throughput']} words/sec")
@@ -220,6 +229,11 @@ def main():
         "--sequential", action="store_true",
         help="Run single-process (no multiprocessing). Equivalent to --workers 1"
     )
+    parser.add_argument(
+        "--hints", action="store_true",
+        help="Simulate the NYT hint button (engine fed the secret's unique "
+             "letters) — measures realistic assisted play, not the raw ceiling"
+    )
     args = parser.parse_args()
 
     workers = args.workers
@@ -240,6 +254,7 @@ def main():
             silent=args.silent,
             seed=args.seed,
             workers=workers,
+            use_hints=args.hints,
         )
         all_stats.append(stats)
         if not args.json:

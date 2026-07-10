@@ -1,0 +1,92 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Wordle Strat-Console</title>
+  <link rel="stylesheet" href="/styles.css" />
+</head>
+<body>
+  <main class="app" id="app">
+    <!-- HEADER -->
+    <header class="topbar" role="banner">
+      <div class="brand">
+        <span class="brand-mark">◆</span>
+        <span class="brand-name">WORDLE <b>STRAT-CONSOLE</b></span>
+      </div>
+      <div class="chips" role="status" aria-live="polite">
+        <span class="chip" id="chip-pool"><b id="chip-pool-n">2315</b> POOL</span>
+        <span class="chip" id="chip-turn">TURN <b id="chip-turn-n">0</b></span>
+        <span class="chip" id="chip-mode">NORMAL</span>
+      </div>
+    </header>
+
+    <!-- LOUD ALERT BAR: input/logic errors + success/info, never silent -->
+    <div id="alert" class="alert hidden" role="alert" aria-live="assertive"></div>
+
+    <div class="grid">
+      <!-- BOARD -->
+      <section class="card" id="card-board" aria-label="Game board">
+        <div class="card-head"><h2>GAME BOARD</h2></div>
+        <div id="banner" class="banner hidden" role="alert">SOLVED ✓</div>
+        <div id="board" class="board" data-rows="6" data-cols="5"></div>
+        <div class="legend">
+          <span class="legend-item"><i class="swatch green"></i>in place</span>
+          <span class="legend-item"><i class="swatch yellow"></i>present</span>
+          <span class="legend-item"><i class="swatch grey"></i>absent</span>
+        </div>
+        <label class="hard-toggle" id="hard-toggle">
+          <input type="checkbox" id="hard" /> <span class="hard-label">HARD MODE</span>
+          <span class="hard-lock" aria-hidden="true">✕ locked</span>
+        </label>
+      </section>
+
+      <!-- COMMAND -->
+      <section class="card" id="card-command" aria-label="Controls">
+        <div class="card-head"><h2>YOUR MOVE</h2></div>
+        <p class="hint-text">Enter the word, then click each tile to set the color
+          from your real Wordle feedback.</p>
+        <input id="guess" class="guess-input" type="text" maxlength="5"
+               autocomplete="off" spellcheck="false" placeholder="5-LETTER GUESS" />
+        <p class="move-note">Type a word — it appears on the board's active row.
+          Click each tile to set its color from your real Wordle feedback, then submit.</p>
+        <button id="submit" class="btn btn-primary">SUBMIT GUESS</button>
+
+        <div class="hint-block">
+          <label class="hint-label" for="hint-letter">NYT HINT LETTER</label>
+          <div class="hint-row">
+            <input id="hint-letter" class="hint-input" type="text" maxlength="1"
+                   autocomplete="off" placeholder="A–Z" />
+            <button id="hint-btn" class="btn btn-accent">LOG HINT</button>
+          </div>
+          <div id="hint-status" class="hint-status"></div>
+          <p class="hint-note">Some answers need a hint. NYT hint = 1 consonant + 1 vowel (recommended).</p>
+        </div>
+
+        <button id="reset" class="btn btn-ghost">SYSTEM RESET</button>
+        <button id="exit" class="btn btn-ghost">EXIT APP</button>
+      </section>
+
+      <!-- INTEL -->
+      <section class="card" id="card-intel" aria-label="Suggestions">
+        <div class="card-head"><h2>STRATEGY</h2></div>
+        <div class="intel-col">
+          <h3 class="intel-title">SOLVE <span class="intel-sub">— play one of these</span></h3>
+          <div id="solve-note" class="solve-note hidden"></div>
+          <ol id="solve-list" class="sugg-list"></ol>
+        </div>
+        <div class="intel-col">
+          <h3 class="intel-title">SHRED <span class="intel-sub">— worst-case splitters</span></h3>
+          <ol id="shred-list" class="sugg-list"></ol>
+        </div>
+      </section>
+    </div>
+
+    <footer class="footer">
+      <span>engine: greedy + residual specialist · 2315 answers</span>
+    </footer>
+  </main>
+
+  <script src="/app.js"></script>
+</body>
+</html>
