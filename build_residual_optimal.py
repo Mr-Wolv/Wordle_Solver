@@ -35,6 +35,15 @@ VOW = set("aeiou")
 def hint_pool(c, v):
     return frozenset(i for i, w in enumerate(WORDS) if c in w and v in w)
 
+# IMPORTANT: the specialist must be DISABLED while we identify residuals, or
+# play_one_game (which builds its own engine) would load the existing
+# residual_optimal.json, close the clusters itself, report 0 residuals, and
+# (below) overwrite the file with an empty one -- silently breaking hinted
+# mode. Force an empty file on disk so the identification reflects true greedy
+# behaviour. The freshly-built file is written at the end.
+if os.path.exists(OUT):
+    os.remove(OUT)
+
 # ---- (1) identify residuals via the CURRENT engine (greedy, hard, hints) ----
 SOL = pd.read_csv(os.path.join(ROOT, "valid_solutions.csv"))["word"].tolist()
 residuals = []
