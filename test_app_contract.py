@@ -32,7 +32,10 @@ def _load(path: str, modname: str):
 desktop = _load("desktop_app.py", "desktop_app_test")
 DA_SRC = open(os.path.join(ROOT, "desktop_app.py"), encoding="utf-8").read()
 SPLASH_SRC = open(os.path.join(ROOT, "splash.html"), encoding="utf-8").read()
-SPEC_SRC = open(os.path.join(ROOT, "desktop_app.spec"), encoding="utf-8").read()
+# desktop_app.spec is a build artifact (*.spec is gitignored) and may be absent
+# from a clean checkout — only load it when present.
+_SPEC_PATH = os.path.join(ROOT, "desktop_app.spec")
+SPEC_SRC = open(_SPEC_PATH, encoding="utf-8").read() if os.path.exists(_SPEC_PATH) else None
 
 
 # ── OPEN: splash opens instantly via a #fragment, never a ?query ────────────
@@ -67,6 +70,7 @@ def test_close_with_splash_paints_inline_screen():
 
 
 # ── BUILD: one-folder (no 65 MB unpack hang) ───────────────────────────────
+@pytest.mark.skipif(SPEC_SRC is None, reason="desktop_app.spec not present in checkout")
 def test_spec_is_one_folder():
     assert "COLLECT(" in SPEC_SRC
     assert "a.binaries" in SPEC_SRC and "a.datas" in SPEC_SRC
