@@ -22,5 +22,20 @@ import sys
 
 _ROOT = os.path.dirname(os.path.abspath(__file__))
 _SRC = os.path.join(_ROOT, "src")
+
+# Neutralise a host environment that leaks an unrelated agent virtualenv onto
+# sys.path (e.g. the Hermes runtime prepends its own venv). If left in place it
+# shadows the project's .venv for packages like pydantic/pydantic_core, causing
+# ABI-mismatch import errors. Removing those foreign site-packages paths lets the
+# project's own .venv win. Harmless on clean CI (no such path present).
+_PROJECT_VENV = os.path.join(_ROOT, ".venv", "Lib", "site-packages")
+for _p in list(sys.path):
+    _lp = _p.lower().replace("\\", "/")
+    if "hermes" in _lp and "site-packages" in _lp and _lp != _PROJECT_VENV.lower().replace("\\", "/"):
+        try:
+            sys.path.remove(_p)
+        except ValueError:
+            pass
+
 if _SRC not in sys.path:
     sys.path.insert(0, _SRC)
