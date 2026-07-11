@@ -13,11 +13,7 @@ sys.path.insert(0, ROOT)
 
 from fastapi.testclient import TestClient  # noqa: E402
 
-spec = importlib.util.spec_from_file_location(
-    "web_server", os.path.join(ROOT, "web_server.py")
-)
-web_server = importlib.util.module_from_spec(spec)
-spec.loader.exec_module(web_server)
+from wordle_solver.app import web_server
 
 client = TestClient(web_server.app)
 

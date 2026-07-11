@@ -16,10 +16,16 @@ import pytest
 from playwright.sync_api import sync_playwright
 
 _chromium_present = os.path.isdir(
-    os.path.join(os.path.expanduser("~"), ".cache", "ms-playwright")
+    os.environ.get("PLAYWRIGHT_BROWSERS_PATH") or os.path.join(
+        os.path.expanduser("~"), ".cache", "ms-playwright"
+    )
 ) and any(
     n.startswith("chromium")
-    for n in os.listdir(os.path.join(os.path.expanduser("~"), ".cache", "ms-playwright"))
+    for n in os.listdir(
+        os.environ.get("PLAYWRIGHT_BROWSERS_PATH") or os.path.join(
+            os.path.expanduser("~"), ".cache", "ms-playwright"
+        )
+    )
 )
 pytestmark = pytest.mark.skipif(
     not _chromium_present,
@@ -46,9 +52,15 @@ def _set_tile(page, idx: int, state: int):
 
 
 def _type_guess(page, word: str):
-    """Type a guess; the active board row becomes the entry surface."""
-    page.fill("#guess", word)
+    """Type a guess via the global keyboard; the active board row becomes the
+    entry surface (there is no #guess input anymore)."""
+    page.keyboard.type(word, delay=10)
     page.wait_for_selector(".board .row.active .tile.entry")
+
+
+def _submit(page):
+    """Submit via Enter (global key) or the on-screen ENTER action key."""
+    page.keyboard.press("Enter")
 
 
 def _reset(page):
@@ -102,8 +114,9 @@ def test_layout_is_real_dom(page):
     assert page.locator("#card-command").count() == 1
     assert page.locator("#card-intel").count() == 1
     assert page.get_by_role("heading", name="GAME BOARD").count() == 1
-    assert page.locator("#guess").count() == 1
-    assert page.locator("#submit").count() == 1
+    assert page.locator("#keyboard").count() == 1
+    assert page.locator("#keyboard .key-action", has_text="ENTER").count() == 1
+    assert page.locator("#keyboard .key-action", has_text="DELETE").count() == 1
     box = page.locator(".board").bounding_box()
     assert box is not None and box["width"] > 0
 
@@ -153,7 +166,7 @@ def test_letter_syncs_to_board_on_type(page):
     assert active.nth(0).inner_text() == "C"
     assert active.nth(2).inner_text() == "A"
     assert active.nth(3).inner_text() == "N"
-    page.fill("#guess", "crane")
+    page.keyboard.type("e", delay=10)
     page.wait_for_timeout(150)
     active = page.locator(".board .row.active .tile.entry")
     assert active.nth(0).inner_text() == "C"
@@ -164,7 +177,7 @@ def test_win_flow_updates_board_and_chip(page):
     _type_guess(page, "crane")
     for i in range(5):
         _set_tile(page, i, 2)
-    page.click("#submit")
+    _submit(page)
     page.wait_for_timeout(300)
     row0 = page.locator(".board .row").nth(0)
     assert row0.inner_text().replace("\n", "").startswith("CRANE")
@@ -180,7 +193,7 @@ def test_nonwin_narrows_pool(page):
     _type_guess(page, "slate")
     _set_tile(page, 1, 1)
     _set_tile(page, 2, 2)
-    page.click("#submit")
+    _submit(page)
     page.wait_for_timeout(300)
     pool = int(page.locator("#chip-pool-n").inner_text())
     assert 0 < pool < 2315
@@ -197,13 +210,13 @@ def test_error_state_keeps_row_editable(page):
     _type_guess(page, "crane")
     _set_tile(page, 2, 2)  # A correct @ pos 3
     _set_tile(page, 1, 1)  # R present
-    page.click("#submit")
+    _submit(page)
     page.wait_for_timeout(300)
     _type_guess(page, "mouse")  # MOUSE has no A -> not in narrowed pool
     for i in range(5):
         _set_tile(page, i, 2)  # claim all-green
     turn_before = int(page.locator("#chip-turn-n").inner_text())
-    page.click("#submit")
+    _submit(page)
     page.wait_for_timeout(300)
     alert = page.locator("#alert")
     assert not alert.is_hidden()
@@ -219,7 +232,7 @@ def test_input_error_is_loud(page):
     _type_guess(page, "zzzzz")
     for i in range(5):
         _set_tile(page, i, 0)
-    page.click("#submit")
+    _submit(page)
     page.wait_for_timeout(300)
     alert = page.locator("#alert")
     assert not alert.is_hidden()
@@ -233,7 +246,7 @@ def test_hard_toggle_shows_lock_x_after_first_move(page):
     # Make a move; hard toggle must lock AND show the ✕ locked marker.
     _type_guess(page, "slate")
     _set_tile(page, 2, 2)
-    page.click("#submit")
+    _submit(page)
     page.wait_for_timeout(300)
     assert page.locator("#hard").is_disabled()
     assert not page.locator("#hard-toggle .hard-lock").is_hidden()
@@ -244,7 +257,7 @@ def test_reset_clears(page):
     _type_guess(page, "crane")
     for i in range(5):
         _set_tile(page, i, 2)
-    page.click("#submit")
+    _submit(page)
     page.wait_for_timeout(200)
     page.click("#reset")
     page.wait_for_timeout(300)

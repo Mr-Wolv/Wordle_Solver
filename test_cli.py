@@ -6,7 +6,7 @@ integer pattern, so malformed input must be rejected loudly.
 """
 import pytest
 
-from cli import parse_pattern
+from wordle_solver.app.cli import parse_pattern
 
 
 def test_parse_all_grey():

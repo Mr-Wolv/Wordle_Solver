@@ -11,8 +11,8 @@ import numpy as np
 import pandas as pd
 import pytest
 
-from lexicon import Lexicon, PatternMatrix
-from Engine import WordleEngine
+from wordle_solver.engine.lexicon import Lexicon, PatternMatrix
+from wordle_solver.engine import WordleEngine
 
 SOLUTIONS = pd.read_csv("valid_solutions.csv")["word"].tolist()
 ALL_WORDS = pd.read_csv("valid_guesses.csv")["word"].tolist()

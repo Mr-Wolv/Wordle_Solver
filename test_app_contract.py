@@ -18,7 +18,7 @@ ROOT = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, ROOT)
 
 import pytest
-import Engine  # noqa: E402  (used by contract tests)
+import wordle_solver.engine as Engine  # noqa: E402  (used by contract tests)
 
 
 def _load(path: str, modname: str):
@@ -29,12 +29,12 @@ def _load(path: str, modname: str):
     return mod
 
 
-desktop = _load("desktop_app.py", "desktop_app_test")
-DA_SRC = open(os.path.join(ROOT, "desktop_app.py"), encoding="utf-8").read()
+desktop = _load(os.path.join("src", "wordle_solver", "desktop", "desktop_app.py"), "desktop_app_test")
+DA_SRC = open(os.path.join(ROOT, "src", "wordle_solver", "desktop", "desktop_app.py"), encoding="utf-8").read()
 SPLASH_SRC = open(os.path.join(ROOT, "splash.html"), encoding="utf-8").read()
 # desktop_app.spec is a build artifact (*.spec is gitignored) and may be absent
 # from a clean checkout — only load it when present.
-_SPEC_PATH = os.path.join(ROOT, "desktop_app.spec")
+_SPEC_PATH = os.path.join(ROOT, "src", "wordle_solver", "desktop", "desktop_app.spec")
 SPEC_SRC = open(_SPEC_PATH, encoding="utf-8").read() if os.path.exists(_SPEC_PATH) else None
 
 
@@ -78,11 +78,35 @@ def test_spec_is_one_folder():
     assert not re.search(r"exe = EXE\(\s*pyz,\s*a\.scripts,\s*a\.binaries", SPEC_SRC, re.S)
 
 
+@pytest.mark.skipif(SPEC_SRC is None, reason="desktop_app.spec not present in checkout")
+def test_build_emits_folder_only_not_root_exe():
+    """A one-folder spec also writes a redundant dist/<name>.exe at the root.
+    That copy cannot launch (no sibling _internal), so build_dist.py must
+    delete it. This test enforces the 'folder only' distributable."""
+    import subprocess
+
+    name = "Wordle-Strat-Console"
+    dist = os.path.join(ROOT, "dist")
+    folder = os.path.join(dist, name)
+    # Build deterministically through the committed recipe.
+    subprocess.run(
+        [sys.executable, os.path.join(ROOT, "src", "wordle_solver", "desktop", "build_dist.py")], check=True
+    )
+    # Folder is the real, self-contained app.
+    assert os.path.isdir(folder), "dist folder missing"
+    assert os.path.exists(os.path.join(folder, name + ".exe")), "launcher missing in folder"
+    # No stray root exe.
+    assert not os.path.exists(os.path.join(dist, name + ".exe")), \
+        "redundant root exe must be removed by build_dist.py"
+    # _internal holds the frozen deps so the folder runs standalone.
+    assert os.path.isdir(os.path.join(folder, "_internal")), "_internal missing"
+
+
 # ── MULTI-INSTANCE: per-instance cache + distinct ports ─────────────────────
 def test_engine_cache_is_per_instance_and_atomic():
     import tempfile
     import json
-    import Engine
+    import wordle_solver.engine as Engine
 
     base = tempfile.mkdtemp(prefix="hermes-contract-")
     orig = Engine.resource_path
@@ -132,7 +156,9 @@ def test_find_free_port_skips_in_use():
 # ── ENGINE LOGIC: pattern math is the single source of truth ───────────────
 def test_no_duplicate_pattern_function():
     # scoring.py previously duplicated calculate_pattern as pattern_for (dead).
-    assert "def pattern_for" not in open(os.path.join(ROOT, "scoring.py")).read()
+    assert "def pattern_for" not in open(
+        os.path.join(ROOT, "src", "wordle_solver", "engine", "scoring.py")
+    ).read()
 
 
 def test_engine_pattern_matches_matrix():

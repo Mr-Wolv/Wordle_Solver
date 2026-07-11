@@ -21,6 +21,7 @@ class App {
   constructor() {
     this.history = [];        // [{guess, colors:[5]}]
     this.entryColors = [0, 0, 0, 0, 0];
+    this.typed = "";          // live entry buffer (max 5), shown on the board
     this.busy = false;
     this.solved = false;
     this.suggestionCache = null;
@@ -29,17 +30,37 @@ class App {
                            // async /api/state fetch — otherwise the board is
                            // blank on load until the network round-trip lands
                            // (WebView2 made this gap visible).
+    this._buildKeyboard(); // on-screen A–Z keyboard under the board
     this.refresh();
   }
 
   $(id) { return document.getElementById(id); }
 
   _bind() {
-    this.$("guess").addEventListener("input", (e) => {
-      e.target.value = e.target.value.toUpperCase().replace(/[^A-Z]/g, "");
-      this._renderBoard();
+    // Global keyboard: letters append to the board, Backspace deletes the
+    // last letter, Enter submits. Letters/Backspace are ignored while busy or
+    // solved; Enter is always allowed to reach submitMove (which itself shows
+    // a clear "Already solved" / "No guesses left" notice when appropriate).
+    // Ignored while an <input> (hint box) is focused, and we never intercept
+    // browser shortcuts (Ctrl/Meta/Alt). No app-level keybindings.
+    document.addEventListener("keydown", (e) => {
+      const t = e.target;
+      if (t && (t.tagName === "INPUT" || t.tagName === "TEXTAREA")) return;
+      if (e.ctrlKey || e.metaKey || e.altKey) return;  // leave browser shortcuts alone
+      if (e.key === "Enter") {
+        e.preventDefault();
+        this.submitMove();
+        return;
+      }
+      if (this.busy || this.solved) return;
+      if (/^[a-zA-Z]$/.test(e.key)) {
+        e.preventDefault();
+        this._appendLetter(e.key.toUpperCase());
+      } else if (e.key === "Backspace") {
+        e.preventDefault();
+        this._deleteLetter();
+      }
     });
-    this.$("submit").addEventListener("click", () => this.submitMove());
     this.$("hint-btn").addEventListener("click", () => this.logHint());
     this.$("hint-letter").addEventListener("keydown", (e) => {
       if (e.key === "Enter") this.logHint();
@@ -47,15 +68,73 @@ class App {
     this.$("reset").addEventListener("click", () => this.reset());
     this.$("exit").addEventListener("click", () => this.exitApp());
     this.$("hard").addEventListener("change", (e) => this.toggleHard(e.target.checked));
-    document.addEventListener("keydown", (e) => {
-      // Ctrl+Q -> graceful exit, but never while the user is typing a guess/hint.
-      if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === "q") {
-        const t = e.target;
-        if (t && (t.tagName === "INPUT" || t.tagName === "TEXTAREA")) return;
-        e.preventDefault();
-        this.exitApp();
-      }
+  }
+
+  // ── entry buffer ───────────────────────────────────────────
+  _appendLetter(ch) {
+    if (this.busy || this.solved) return;
+    if (this.typed.length >= 5) return;
+    this.typed += ch;
+    this._renderBoard();
+  }
+
+  _deleteLetter() {
+    if (this.busy || this.solved) return;
+    this.typed = this.typed.slice(0, -1);
+    this._renderBoard();
+  }
+
+  // ── on-screen keyboard ─────────────────────────────────
+  // Tapping a letter appends it to the active guess (max 5) if a move is
+  // still legal. ENTER submits; DELETE removes the last letter — mirroring
+  // the physical keyboard. A brief "pressed" animation plays (mobile-style)
+  // but keys are never left dimmed. The board is the single entry surface.
+  _buildKeyboard() {
+    const kb = this.$("keyboard");
+    if (!kb) return;
+    kb.innerHTML = "";
+    const rows = ["QWERTYUIOP", "ASDFGHJKL", "ZXCVBNM"];
+    rows.forEach((rowLetters) => {
+      const row = document.createElement("div");
+      row.className = "kb-row";
+      rowLetters.split("").forEach((ch) => {
+        const b = document.createElement("button");
+        b.type = "button";
+        b.className = "key";
+        b.textContent = ch;
+        b.dataset.letter = ch;
+        b.addEventListener("click", () => this._typeLetter(ch, b));
+        row.appendChild(b);
+      });
+      kb.appendChild(row);
     });
+    // Action keys: ENTER (submit) + DELETE (backspace) — each with its own
+    // identity: DELETE is a subtle destructive key, ENTER the green "go" key.
+    const actions = document.createElement("div");
+    actions.className = "kb-row kb-actions";
+    const del = document.createElement("button");
+    del.type = "button";
+    del.className = "key key-action key-del";
+    del.innerHTML = '<span class="ka-ico">⌫</span><span class="ka-lbl">DELETE</span>';
+    del.setAttribute("aria-label", "Delete last letter");
+    del.addEventListener("click", () => this._deleteLetter());
+    const enter = document.createElement("button");
+    enter.type = "button";
+    enter.className = "key key-action key-enter";
+    enter.innerHTML = '<span class="ka-lbl">ENTER</span><span class="ka-ico">↵</span>';
+    enter.setAttribute("aria-label", "Submit guess");
+    enter.addEventListener("click", () => this.submitMove());
+    actions.appendChild(del);
+    actions.appendChild(enter);
+    kb.appendChild(actions);
+  }
+
+  _typeLetter(ch, btn) {
+    this._appendLetter(ch);
+    if (btn) {
+      btn.classList.add("pressed");
+      setTimeout(() => btn.classList.remove("pressed"), 110);
+    }
   }
 
   // ── board rendering ───────────────────────────────────────
@@ -65,7 +144,7 @@ class App {
     const board = this.$("board");
     const n = this.history.length;
     const active = !this.solved && n < 6;
-    const typed = (this.$("guess").value || "").toUpperCase();
+    const typed = this.typed;
 
     board.innerHTML = "";
     for (let r = 0; r < 6; r++) {
@@ -212,29 +291,27 @@ class App {
       this.alert("INFO", "No guesses left", "All 6 rows are used — hit SYSTEM RESET.");
       return;
     }
-    const guess = (this.$("guess").value || "").toUpperCase();
+    const guess = this.typed;
     if (guess.length !== 5) {
       this.alert("INPUT_ERROR", "Not a 5-letter word",
         "Type exactly five letters before submitting.");
       return;
     }
     this.busy = true;
-    this.$("submit").disabled = true;
     try {
       const st = await this._post("/api/submit", { guess, colors: this.entryColors.slice() });
       this.history.push({ guess, colors: this.entryColors.slice() });
       this.entryColors = [0, 0, 0, 0, 0];
-      this.$("guess").value = "";
+      this.typed = "";
       this._renderBoard();
       this._renderState(st);
       this.clearAlert();
-      if (st.won) this.alert("SUCCESS", "Solved!", `${guess} in ${st.turn - 1} — nice.`);
+      if (st.solved) this.alert("SUCCESS", "Solved!", `${guess} in ${st.turn - 1} — nice.`);
     } catch (err) {
       // Row stays editable on any failure so the user can fix colors/word.
       this.alertErr(err);
     } finally {
       this.busy = false;
-      this.$("submit").disabled = false;
     }
   }
 
@@ -277,7 +354,7 @@ class App {
       this.history = [];
       this.entryColors = [0, 0, 0, 0, 0];
       this.solved = false;
-      this.$("guess").value = "";
+      this.typed = "";
       this.$("hint-letter").value = "";
       this._renderBoard();
       this._renderState(st);

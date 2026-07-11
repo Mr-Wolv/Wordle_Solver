@@ -2,7 +2,6 @@
 # Requires Python 3.12
 
 altgraph==0.17.5
-flet==0.85.3
 fastapi==0.139.0
 uvicorn==0.51.0
 pywebview==6.2.1  # native desktop wrapper (WebView2 on Windows)

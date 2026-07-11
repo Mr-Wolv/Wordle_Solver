@@ -14,8 +14,8 @@ always hold:
 import numpy as np
 import pytest
 
-from scoring import score_guesses, N_PATTERNS, _PATTERNS
-from Engine import (
+from wordle_solver.engine.scoring import score_guesses, N_PATTERNS, _PATTERNS
+from wordle_solver.engine import (
     STD_EARLY_WC_PENALTY, STD_TURN_PENALTY, HARD_EARLY_WC_PENALTY,
     HARD_BASE_PENALTY, HARD_PENALTY_PER_TURN, HARD_MAX_PENALTY,
     WIN_BONUS_WEIGHT, ENDGAME_WIN_BONUS,

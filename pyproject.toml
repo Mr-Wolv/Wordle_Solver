@@ -1,0 +1,27 @@
+[build-system]
+requires = ["setuptools>=61"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "wordle-solver"
+version = "2.1.0"
+description = "Entropy-driven, hint-aware Wordle solver with a desktop (WebView2) and web UI."
+readme = "ReadME.md"
+requires-python = ">=3.10"
+dependencies = [
+    "numpy",
+    "pandas",
+    "fastapi",
+    "uvicorn",
+    "pydantic",
+    "pywebview",
+    "webview",
+]
+
+[project.optional-dependencies]
+dev = ["pytest"]
+build = ["pyinstaller"]
+provers = ["wordfreq"]
+
+[tool.setuptools.packages.find]
+where = ["src"]

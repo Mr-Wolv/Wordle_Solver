@@ -31,25 +31,24 @@ jobs:
     - name: Generate Data and Matrix
       run: |
         # scientific_word_data.csv is committed (deterministic, generated once
-        # offline via Data.py + wordfreq). Only the matrix -- derived from it --
-        # is rebuilt here.
-        python build_matrix.py
+        # offline via wordle_solver.generators.build_word_data + wordfreq). Only
+        # the matrix -- derived from it -- is rebuilt here.
+        python -m wordle_solver.generators.build_matrix
 
     - name: Generate Turn-1 Cache (preload)
       run: |
         # Precompute both normal and hard mode first-guess results
         # so the exe starts instantly with zero delay
-        python -c "from Engine import WordleEngine; e=WordleEngine(); e.get_suggestions(); e.get_suggestions(is_hard_mode=True)"
+        python -c "from wordle_solver.engine import WordleEngine; e=WordleEngine(); e.get_suggestions(); e.get_suggestions(is_hard_mode=True)"
 
     # residual_optimal.json and t1_h_opening.json are committed artifacts
-    # (generated offline by build_residual_optimal.py / find_t1_h.py -- the
-    # latter is a multi-hour brute-force prover and must NOT run in CI). They
-    # are bundled into the exe via the spec's `datas`, so no regeneration step
-    # is needed here.
+    # (generated offline by wordle_solver.generators.build_residual_optimal /
+    # find_t1_h -- the latter is a multi-hour brute-force prover and must NOT
+    # run in CI). They are bundled into the exe via the spec's `datas`, so no
+    # regeneration step is needed here.
 
-    - name: Build with PyInstaller (WebView2 desktop app)
-      run: |
-        pyinstaller --noconfirm --clean desktop_app.spec
+    - name: Build one-folder bundle (removes redundant root exe)
+      run: python src/wordle_solver/desktop/build_dist.py
 
     # NOTE: intentionally NO artifact upload. The user requires the app to be
     # reproducible from source anywhere, so the build above is the proof of

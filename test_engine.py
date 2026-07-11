@@ -7,7 +7,7 @@ Run with: pytest test_engine.py -v
 import pytest
 import numpy as np
 import pandas as pd
-from Engine import WordleEngine
+from wordle_solver.engine import WordleEngine
 
 # Real NYT answer universe (what the solver actually targets).
 VALID_SOLUTIONS: list[str] = pd.read_csv("valid_solutions.csv").iloc[:, 0].tolist()

@@ -42,7 +42,9 @@ from playwright.sync_api import sync_playwright
 # without it (restricted networks, headless CI without the binary) the
 # whole module is skipped at collection time — exactly like the e2e suite
 # — so `pytest` stays green instead of erroring on a missing browser.
-_BROWSER_DIR = os.path.join(os.path.expanduser("~"), ".cache", "ms-playwright")
+_BROWSER_DIR = os.environ.get("PLAYWRIGHT_BROWSERS_PATH") or os.path.join(
+    os.path.expanduser("~"), ".cache", "ms-playwright"
+)
 _chromium_present = os.path.isdir(_BROWSER_DIR) and any(
     n.startswith("chromium") for n in os.listdir(_BROWSER_DIR)
 )
@@ -77,7 +79,7 @@ def base_url():
     chosen port so the per-instance turn-1 cache file can't collide with a
     dev server the user might have running elsewhere.
     """
-    import web_server as backend
+    import wordle_solver.app.web_server as backend
 
     port = _free_port()
     backend.configure_engine(port)
@@ -110,10 +112,24 @@ def _set(page, idx, state):
 
 
 def _set_word(page, word, colors):
-    page.fill("#guess", word)
+    page.keyboard.type(word, delay=10)
     page.wait_for_selector(".board .row.active .tile.entry")
     for i, c in enumerate(colors):
         _set(page, i, c)
+
+
+def _submit(page):
+    """Submit via Enter (global key) or the on-screen ENTER action key."""
+    page.keyboard.press("Enter")
+
+
+def _wait_alert_clear(page):
+    """SUCCESS/INFO alerts auto-dismiss after 3.5s; wait for that so the next
+    assertion sees the *new* alert, not a lingering transient one."""
+    try:
+        page.locator("#alert").wait_for(state="hidden", timeout=4000)
+    except Exception:
+        pass
 
 
 def _turn(page):
@@ -136,6 +152,9 @@ def browser():
 def page(browser, base_url):
     pg = browser.new_page()
     pg.goto(base_url)
+    # The backend (web_server) is module-scoped, so its engine state (won_flag,
+    # hard_mode, pool) survives across tests. Reset it so every test starts
+    # from a clean game regardless of test order.
     pg.evaluate("window.app.reset()")
     pg.wait_for_timeout(120)
     yield pg
@@ -155,12 +174,13 @@ def test_W1_initialize(page):
 
 # ── W2: enter a guess ──────────────────────────────────────────
 def test_W2_enter_guess(page):
-    page.fill("#guess", "crane")
+    page.keyboard.type("crane", delay=10)
     page.wait_for_selector(".board .row.active .tile.entry")
     active = page.locator(".board .row.active .tile.entry")
     assert active.nth(0).inner_text() == "C" and active.nth(4).inner_text() == "E"
     # backspace flows back into the board
-    page.fill("#guess", "cra")
+    page.keyboard.press("Backspace")
+    page.keyboard.press("Backspace")
     page.wait_for_timeout(80)
     active = page.locator(".board .row.active .tile.entry")
     assert active.nth(0).inner_text() == "C"
@@ -169,7 +189,7 @@ def test_W2_enter_guess(page):
 
 # ── W3: color the feedback (unhappy: mis-colored then corrected) ─
 def test_W3_color_feedback(page):
-    page.fill("#guess", "crane")
+    page.keyboard.type("crane", delay=10)
     page.wait_for_selector(".board .row.active .tile.entry")
     t = page.locator(".board .row.active .tile.entry").nth(0)
     t.click()  # -> present
@@ -184,7 +204,7 @@ def test_W3_color_feedback(page):
 def test_W4_submit_losing(page):
     before = _pool(page)
     _set_word(page, "slate", [0, 1, 2, 0, 0])
-    page.click("#submit")
+    _submit(page)
     page.wait_for_timeout(250)
     assert _turn(page) == 2
     assert 0 < _pool(page) < before
@@ -196,7 +216,7 @@ def test_W4_submit_losing(page):
 # ── W5: submit a winning guess (happy) ─────────────────────────
 def test_W5_submit_winning(page):
     _set_word(page, "crane", [2, 2, 2, 2, 2])
-    page.click("#submit")
+    _submit(page)
     page.wait_for_timeout(250)
     assert not page.locator("#banner").is_hidden()
     assert page.locator("#chip-pool-n").inner_text() == "1"
@@ -208,11 +228,11 @@ def test_W5_submit_winning(page):
 # ── W6: impossible feedback (unhappy) ──────────────────────────
 def test_W6_impossible_feedback(page):
     _set_word(page, "crane", [0, 1, 2, 0, 0])  # narrows pool (no 'a'-word left-cluster)
-    page.click("#submit")
+    _submit(page)
     page.wait_for_timeout(250)
     _set_word(page, "mouse", [2, 2, 2, 2, 2])   # MOUSE has no 'a', can't be in pool
     turn_before = _turn(page)
-    page.click("#submit")
+    _submit(page)
     page.wait_for_timeout(250)
     alert = page.locator("#alert")
     assert not alert.is_hidden()
@@ -235,7 +255,7 @@ def test_W7_hard_on_before_move(page):
 # ── W8: hard mode locks after first move (unhappy toggle) ──────
 def test_W8_hard_locked_after_move(page):
     _set_word(page, "slate", [0, 1, 2, 0, 0])
-    page.click("#submit")
+    _submit(page)
     page.wait_for_timeout(250)
     assert page.locator("#hard").is_disabled()
     assert not page.locator("#hard-toggle .hard-lock").is_hidden()
@@ -251,7 +271,7 @@ def test_W9_hint_happy(page):
     page.click("#hint-btn")
     page.wait_for_timeout(150)
     assert "KNOWN: E" in page.locator("#hint-status").inner_text()
-    assert "need 1 CONSONANT" in page.locator("#hint-status").inner_text()
+    assert "need 1 consonant" in page.locator("#hint-status").inner_text()
     before = _pool(page)
     page.fill("#hint-letter", "r")
     page.click("#hint-btn")
@@ -285,7 +305,7 @@ def test_W10_hint_violations(page):
 # ── W11: system reset (happy) ──────────────────────────────────
 def test_W11_system_reset(page):
     _set_word(page, "crane", [2, 2, 2, 2, 2])
-    page.click("#submit")
+    _submit(page)
     page.wait_for_timeout(200)
     page.click("#reset")
     page.wait_for_timeout(250)
@@ -294,7 +314,7 @@ def test_W11_system_reset(page):
     assert page.locator("#banner").is_hidden()
     assert page.locator(".board .row").count() == 6
     assert page.locator(".board .row.active .tile.entry").count() == 5
-    assert page.locator("#hint-status").inner_text() == "need 1 CONSONANT + 1 VOWEL"
+    assert page.locator("#hint-status").inner_text() == "OPTIONAL hint: reveal 1 consonant + 1 vowel"
 
 
 # ── W12: game over boundary (6 rows used) (unhappy) ────────────
@@ -323,16 +343,17 @@ def test_W12_game_over_boundary(page):
                 out[i] = 1
                 s[s.index(g[i])] = None
         _set_word(page, top, out)
-        page.click("#submit")
+        _submit(page)
         page.wait_for_timeout(180)
     # either solved or board full
     board_full = page.locator(".board .row.active .tile.entry").count() == 0
     solved = not page.locator("#banner").is_hidden()
     assert board_full or solved
     # a further submit is explained, not a confusing error
-    page.fill("#guess", "about")
+    _wait_alert_clear(page)
+    page.keyboard.type("about", delay=10)
     page.wait_for_timeout(80)
-    page.click("#submit")
+    _submit(page)
     page.wait_for_timeout(180)
     alert = page.locator("#alert")
     assert not alert.is_hidden()
@@ -342,11 +363,12 @@ def test_W12_game_over_boundary(page):
 # ── W13: solved boundary (further submit blocked) (unhappy) ────
 def test_W13_solved_boundary(page):
     _set_word(page, "crane", [2, 2, 2, 2, 2])
-    page.click("#submit")
+    _submit(page)
     page.wait_for_timeout(200)
-    page.fill("#guess", "about")
+    _wait_alert_clear(page)
+    page.keyboard.type("about", delay=10)
     page.wait_for_timeout(60)
-    page.click("#submit")
+    _submit(page)
     page.wait_for_timeout(180)
     assert "Already solved" in page.locator("#alert").inner_text()
 

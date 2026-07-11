@@ -27,7 +27,9 @@
     <div class="grid">
       <!-- BOARD -->
       <section class="card" id="card-board" aria-label="Game board">
-        <div class="card-head"><h2>GAME BOARD</h2></div>
+        <div class="card-head">
+          <h2>GAME BOARD</h2>
+        </div>
         <div id="banner" class="banner hidden" role="alert">SOLVED ✓</div>
         <div id="board" class="board" data-rows="6" data-cols="5"></div>
         <div class="legend">
@@ -35,36 +37,44 @@
           <span class="legend-item"><i class="swatch yellow"></i>present</span>
           <span class="legend-item"><i class="swatch grey"></i>absent</span>
         </div>
+        <!-- On-screen keyboard: letters + ENTER (submit) + DELETE (backspace) -->
+        <div id="keyboard" class="keyboard" aria-label="On-screen keyboard"></div>
+      </section>
+
+      <!-- COMMAND / HOW TO PLAY -->
+      <section class="card" id="card-command" aria-label="How to play">
+        <div class="card-head"><h2>HOW TO PLAY</h2></div>
+
         <label class="hard-toggle" id="hard-toggle">
           <input type="checkbox" id="hard" /> <span class="hard-label">HARD MODE</span>
           <span class="hard-lock" aria-hidden="true">✕ locked</span>
         </label>
-      </section>
 
-      <!-- COMMAND -->
-      <section class="card" id="card-command" aria-label="Controls">
-        <div class="card-head"><h2>YOUR MOVE</h2></div>
-        <p class="hint-text">Enter the word, then click each tile to set the color
-          from your real Wordle feedback.</p>
-        <input id="guess" class="guess-input" type="text" maxlength="5"
-               autocomplete="off" spellcheck="false" placeholder="5-LETTER GUESS" />
-        <p class="move-note">Type a word — it appears on the board's active row.
-          Click each tile to set its color from your real Wordle feedback, then submit.</p>
-        <button id="submit" class="btn btn-primary">SUBMIT GUESS</button>
+        <ol class="howto">
+          <li><b>Type your guess.</b> Just press the letter keys — no box to click. The word appears on the board's active row (max 5 letters).</li>
+          <li><b>Fix a tile's color.</b> After you type, click each tile on the active row to cycle it <i class="sw grey"></i> absent → <i class="sw yellow"></i> present → <i class="sw green"></i> correct — matching the colors from your real Wordle.</li>
+          <li><b>Submit.</b> Press <kbd>Enter</kbd> or the on-screen <b>ENTER</b> key. The board's top suggestion is your optimal next word — play it.</li>
+          <li><b>Delete.</b> Press <kbd>Backspace</kbd> or the on-screen <b>DELETE</b> key to remove the last letter typed.</li>
+          <li><b>NYT hint (optional).</b> Type one consonant + one vowel in the hint box and log them — the solver still closes 100% with no hints, so skip it if you like.</li>
+          <li><b>Done?</b> Use <b>SYSTEM RESET</b> for a new puzzle. <b>EXIT APP</b> quits.</li>
+        </ol>
 
         <div class="hint-block">
-          <label class="hint-label" for="hint-letter">NYT HINT LETTER</label>
+          <label class="hint-label" for="hint-letter">NYT HINT LETTER <span class="hint-opt">— optional</span></label>
           <div class="hint-row">
             <input id="hint-letter" class="hint-input" type="text" maxlength="1"
                    autocomplete="off" placeholder="A–Z" />
             <button id="hint-btn" class="btn btn-accent">LOG HINT</button>
           </div>
           <div id="hint-status" class="hint-status"></div>
-          <p class="hint-note">Some answers need a hint. NYT hint = 1 consonant + 1 vowel (recommended).</p>
+          <p class="hint-note">The game is fully solvable with no hints. The NYT hint
+            (1 consonant + 1 vowel) is an optional shortcut, not required.</p>
         </div>
 
-        <button id="reset" class="btn btn-ghost">SYSTEM RESET</button>
-        <button id="exit" class="btn btn-ghost">EXIT APP</button>
+        <div class="cmd-actions">
+          <button id="reset" class="btn btn-ghost">SYSTEM RESET</button>
+          <button id="exit" class="btn btn-ghost">EXIT APP</button>
+        </div>
       </section>
 
       <!-- INTEL -->
@@ -72,11 +82,19 @@
         <div class="card-head"><h2>STRATEGY</h2></div>
         <div class="intel-col">
           <h3 class="intel-title">SOLVE <span class="intel-sub">— play one of these</span></h3>
+          <div class="col-head">
+            <span class="col-word">WORD</span>
+            <span class="col-gain" title="GAIN = information value — higher splits the pool better">GAIN ▾</span>
+          </div>
           <div id="solve-note" class="solve-note hidden"></div>
           <ol id="solve-list" class="sugg-list"></ol>
         </div>
         <div class="intel-col">
           <h3 class="intel-title">SHRED <span class="intel-sub">— worst-case splitters</span></h3>
+          <div class="col-head">
+            <span class="col-word">WORD</span>
+            <span class="col-prob" title="P(ans) = chance this word is the actual answer (posterior)">P(ans) ▾</span>
+          </div>
           <ol id="shred-list" class="sugg-list"></ol>
         </div>
       </section>
