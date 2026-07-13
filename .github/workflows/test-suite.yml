@@ -20,6 +20,10 @@ jobs:
       PYTHONWARNINGS: error
       # Opt the heavy frozen-bundle EXE self-play test INTO the CI run.
       WS_BUILD_TEST: "1"
+      # The package lives under src/ and is NOT pip-installed in CI (it is
+      # injected via conftest for pytest). Bare `python -m wordle_solver...`
+      # steps (build_matrix) need src/ on the path explicitly.
+      PYTHONPATH: src
     steps:
       - uses: actions/checkout@v4
 
