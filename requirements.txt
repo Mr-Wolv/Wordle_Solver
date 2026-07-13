@@ -3,6 +3,8 @@
 
 altgraph==0.17.5
 fastapi==0.139.0
+httpx>=0.27  # required by FastAPI runtime
+httpx2>=2.0  # Starlette testclient prefers httpx2 over httpx (warning-free TestClient)
 uvicorn==0.51.0
 pywebview==6.2.1  # native desktop wrapper (WebView2 on Windows)
 playwright==1.61.0

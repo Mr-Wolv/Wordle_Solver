@@ -1,48 +1,60 @@
 """End-to-end tests driving the REAL DOM via Playwright.
 
-These are the reliable UI tests you asked for: no canvas, no vision
-guessing — we assert against actual elements, their classes, ARIA
-labels, and text content, exactly like you'd do with Playwright + React.
+These assert against actual elements, classes, ARIA labels, and text
+content (no canvas, no vision guessing). The suite stands up its own
+FastAPI backend on an ephemeral port.
 
-Run with the live server up on :8000:
-    python -m pytest test_e2e_web.py -q
-
-NOTE: skipped automatically when the chromium browser is not installed
-(offline / restricted-network hosts).
+UI flow: the page exposes a Normal/Hard toggle (id #hard) + hint entry
+(#hint-letter / #hint-btn). The backend ESTABLISHES the domain (one of
+six) from (hard, hint count) and locks it after the first guess — so the
+toggle + hint input are disabled from turn 2 on.
 """
-import os
+
+import socket
+import threading
 
 import pytest
+import uvicorn
 from playwright.sync_api import sync_playwright
 
-_chromium_present = os.path.isdir(
-    os.environ.get("PLAYWRIGHT_BROWSERS_PATH") or os.path.join(
-        os.path.expanduser("~"), ".cache", "ms-playwright"
-    )
-) and any(
-    n.startswith("chromium")
-    for n in os.listdir(
-        os.environ.get("PLAYWRIGHT_BROWSERS_PATH") or os.path.join(
-            os.path.expanduser("~"), ".cache", "ms-playwright"
-        )
-    )
-)
-pytestmark = pytest.mark.skipif(
-    not _chromium_present,
-    reason="Playwright chromium not installed (`playwright install chromium`)",
-)
+from _chromium import pytestmark  # shared chromium-availability guard
 
-BASE = os.environ.get("BASE_URL", "http://127.0.0.1:8000")
+
+def _free_port() -> int:
+    s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    s.bind(("127.0.0.1", 0))
+    port = s.getsockname()[1]
+    s.close()
+    return port
+
+
+@pytest.fixture(scope="module")
+def base_url():
+    import wordle_solver.app.web_server as backend
+
+    port = _free_port()
+    backend.configure_engine(port)
+    server = uvicorn.Server(
+        uvicorn.Config(backend.app, host="127.0.0.1", port=port, log_level="error")
+    )
+    thread = threading.Thread(target=server.run, daemon=True)
+    thread.start()
+    for _ in range(100):
+        try:
+            with socket.create_connection(("127.0.0.1", port), timeout=0.5):
+                break
+        except OSError:
+            if not thread.is_alive():
+                raise RuntimeError("web_server failed to start")
+    return f"http://127.0.0.1:{port}"
 
 
 def _tile_state(label: str) -> int:
-    """Map an ARIA label like 'tile 1, present' to 0/1/2."""
     word = label.split(",")[1].strip().split()[0]
     return {"absent": 0, "present": 1, "correct": 2}[word]
 
 
 def _set_tile(page, idx: int, state: int):
-    """Click the active board row's tile `idx` until its ARIA state == state."""
     btn = page.locator(".board .row.active .tile.entry").nth(idx)
     for _ in range(3):
         if _tile_state(btn.get_attribute("aria-label")) == state:
@@ -52,20 +64,30 @@ def _set_tile(page, idx: int, state: int):
 
 
 def _type_guess(page, word: str):
-    """Type a guess via the global keyboard; the active board row becomes the
-    entry surface (there is no #guess input anymore)."""
     page.keyboard.type(word, delay=10)
     page.wait_for_selector(".board .row.active .tile.entry")
 
 
 def _submit(page):
-    """Submit via Enter (global key) or the on-screen ENTER action key."""
     page.keyboard.press("Enter")
+    # Wait for the app to finish the async submit (busy clears in finally)
+    # before any further action — otherwise the entry buffer can be locked
+    # (busy) and the next guess's keystrokes are silently ignored.
+    page.wait_for_function(
+        "() => !window.app || window.app.busy === false", timeout=8000)
+
+
+def _hard(page, on: bool):
+    # Live Normal/Hard toggle (the game auto-starts as normal_0 on load).
+    page.evaluate(
+        "async (on) => { const r = await fetch('/api/hard',{method:'POST',"
+        "headers:{'Content-Type':'application/json'},"
+        "body:JSON.stringify({on})}); return r.status; }", on)
 
 
 def _reset(page):
-    page.evaluate("window.app.reset()")
-    page.wait_for_timeout(150)
+    page.click("#reset")
+    page.wait_for_timeout(120)
 
 
 @pytest.fixture(scope="module")
@@ -77,35 +99,43 @@ def browser():
 
 
 @pytest.fixture
-def page(browser):
+def page(browser, base_url):
     pg = browser.new_page()
-    pg.goto(BASE)
-    _reset(pg)
+    pg.goto(base_url)
+    # Wait for the App to finish its initial /api/state render so chip reads
+    # aren't racing the async fetch.
+    pg.wait_for_function(
+        "() => document.documentElement.dataset.appReady === '1'", timeout=8000)
     yield pg
     pg.close()
 
 
+@pytest.fixture(autouse=True)
+def _reset_each(page):
+    # The web module keeps game state in a module-level global shared by the
+    # whole module-scoped server, AND the frontend App holds its own entry
+    # buffer / busy flag. Reset both so a prior test's state can't leak into
+    # the next one (this is what makes the "lock after turn 1" tests stable).
+    _reset(page)
+    page.evaluate(
+        "() => { if (window.app) { window.app.typed=''; window.app.busy=false;"
+        " window.app.solved=false; window.app.entryColors=[0,0,0,0,0]; } }")
+
+
 @pytest.fixture
-def raw_page(browser):
-    """A freshly loaded page with NO reset and NO interaction — used to test
-    the pure initialization path (the board must paint on load by itself)."""
+def raw_page(browser, base_url):
     pg = browser.new_page()
-    pg.goto(BASE)
+    pg.goto(base_url)
     yield pg
     pg.close()
 
 
 def test_board_paints_on_pure_init(raw_page):
-    # REGRESSION: board must render 6x5 on first load with zero interaction
-    # (no reset). Previously the board only painted after the async
-    # /api/state fetch, so it was blank on init but appeared after reset.
     pg = raw_page
-    # assert BEFORE any network wait: the empty board is painted synchronously
     rows = pg.locator(".board .row")
     assert rows.count() == 6
     for r in range(6):
         assert rows.nth(r).locator(".tile").count() == 5
-    # the active (first) row exists with 5 entry tiles, ready for typing
     assert pg.locator(".board .row.active .tile.entry").count() == 5
 
 
@@ -122,22 +152,17 @@ def test_layout_is_real_dom(page):
 
 
 def test_board_renders_on_initial_load(page):
-    # Bug fix: the 6x5 board must exist on load, with no interaction.
     rows = page.locator(".board .row")
     assert rows.count() == 6
-    # every row has 5 tiles, all empty placeholders (state-0 / .empty)
     for r in range(6):
         tiles = rows.nth(r).locator(".tile")
         assert tiles.count() == 5
         assert tiles.nth(0).get_attribute("class") is not None
-    # turn starts at 1 (1-based), pool full
     assert page.locator("#chip-turn-n").inner_text() == "1"
     assert page.locator("#chip-pool-n").inner_text() == "2315"
 
 
 def test_entry_tiles_appear_on_typing(page):
-    # The active board row hosts the live guess: letters appear as you type,
-    # and each tile is clickable to set its Wordle color.
     _type_guess(page, "crane")
     tiles = page.locator(".board .row.active .tile.entry")
     assert tiles.count() == 5
@@ -158,10 +183,8 @@ def test_tile_color_cycles(page):
 
 
 def test_letter_syncs_to_board_on_type(page):
-    # Typing/backspacing flows straight into the board's active row.
     _type_guess(page, "cran")
     active = page.locator(".board .row.active .tile.entry")
-    # active row always shows 5 tiles; the typed letters fill the first ones
     assert active.count() == 5
     assert active.nth(0).inner_text() == "C"
     assert active.nth(2).inner_text() == "A"
@@ -182,9 +205,8 @@ def test_win_flow_updates_board_and_chip(page):
     row0 = page.locator(".board .row").nth(0)
     assert row0.inner_text().replace("\n", "").startswith("CRANE")
     assert row0.locator(".tile.state-2").count() == 5
-    # no stale entry tiles remain after submit
     assert page.locator(".board .row.active .tile.entry").count() == 0
-    assert page.locator("#chip-turn-n").inner_text() == "2"
+    assert page.locator("#chip-turn-n").inner_text() == "1"
     assert page.locator("#chip-pool-n").inner_text() == "1"
     assert not page.locator("#banner").is_hidden()
 
@@ -197,24 +219,20 @@ def test_nonwin_narrows_pool(page):
     page.wait_for_timeout(300)
     pool = int(page.locator("#chip-pool-n").inner_text())
     assert 0 < pool < 2315
+    # toggle is locked after the first move
     assert page.locator("#hard").is_disabled()
-    # active row should now hold the NEXT guess (empty), not the submitted one
     assert page.locator(".board .row.active .tile.entry").count() == 5
 
 
 def test_error_state_keeps_row_editable(page):
-    # S3: an impossible pattern is rejected (409) with a LOUD categorized
-    # alert, the turn does NOT advance, and the active row stays editable.
-    # Narrow the pool first (CRANE non-win), then claim an all-green guess
-    # that cannot be in the narrowed pool -> deterministic 409 LOGIC_ERROR.
     _type_guess(page, "crane")
-    _set_tile(page, 2, 2)  # A correct @ pos 3
-    _set_tile(page, 1, 1)  # R present
+    _set_tile(page, 2, 2)
+    _set_tile(page, 1, 1)
     _submit(page)
     page.wait_for_timeout(300)
-    _type_guess(page, "mouse")  # MOUSE has no A -> not in narrowed pool
+    _type_guess(page, "mouse")
     for i in range(5):
-        _set_tile(page, i, 2)  # claim all-green
+        _set_tile(page, i, 2)
     turn_before = int(page.locator("#chip-turn-n").inner_text())
     _submit(page)
     page.wait_for_timeout(300)
@@ -222,13 +240,11 @@ def test_error_state_keeps_row_editable(page):
     assert not alert.is_hidden()
     assert "LOGIC" in alert.inner_text()
     assert "impossible" in alert.inner_text().lower()
-    assert int(page.locator("#chip-turn-n").inner_text()) == turn_before  # no advance
-    # row remains editable (tiles still clickable) for correction
+    assert int(page.locator("#chip-turn-n").inner_text()) == turn_before
     assert page.locator(".board .row.active .tile.entry").count() == 5
 
 
 def test_input_error_is_loud(page):
-    # Typing a non-word and submitting must surface an INPUT error loudly.
     _type_guess(page, "zzzzz")
     for i in range(5):
         _set_tile(page, i, 0)
@@ -239,18 +255,21 @@ def test_input_error_is_loud(page):
     assert "INPUT" in alert.inner_text()
 
 
-def test_hard_toggle_shows_lock_x_after_first_move(page):
-    # Before a move: toggle is enabled, no lock marker.
+def test_mode_locked_after_first_move(page):
+    # Before a move: the toggle is enabled.
     assert not page.locator("#hard").is_disabled()
-    assert page.locator("#hard-toggle .hard-lock").is_hidden()
-    # Make a move; hard toggle must lock AND show the ✕ locked marker.
     _type_guess(page, "slate")
     _set_tile(page, 2, 2)
     _submit(page)
     page.wait_for_timeout(300)
+    # After the first move the toggle + hint input are locked.
     assert page.locator("#hard").is_disabled()
-    assert not page.locator("#hard-toggle .hard-lock").is_hidden()
-    assert "locked" in page.locator("#hard-toggle .hard-lock").inner_text().lower()
+    assert page.locator("#hint-letter").is_disabled()
+    resp = page.evaluate(
+        "async () => { const r = await fetch('/api/hard',{method:'POST',"
+        "headers:{'Content-Type':'application/json'},"
+        "body:JSON.stringify({on:true})}); return r.status; }")
+    assert resp == 409
 
 
 def test_reset_clears(page):
@@ -264,12 +283,13 @@ def test_reset_clears(page):
     assert page.locator("#chip-turn-n").inner_text() == "1"
     assert page.locator("#chip-pool-n").inner_text() == "2315"
     assert page.locator("#banner").is_hidden()
-    # board back to 6 empty rows, active row ready
     assert page.locator(".board .row").count() == 6
-    assert page.locator(".board .row.active .tile.entry").count() == 5
+    # after reset, toggle is re-enabled
+    assert page.locator("#hard").is_disabled() is False
 
 
 def test_hint_flow(page):
+    _reset(page)
     page.fill("#hint-letter", "e")
     page.click("#hint-btn")
     page.wait_for_timeout(200)

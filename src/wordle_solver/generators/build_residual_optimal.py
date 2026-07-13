@@ -37,9 +37,10 @@ from wordle_solver.engine import WordleEngine
 from wordle_solver.engine.game import play_one_game
 from wordle_solver.engine.patterns import build_optimal_table
 
+from wordle_solver.utils import data_path
+
 ROOT = os.path.dirname(os.path.abspath(__file__))
-REPO_ROOT = os.path.abspath(os.path.join(ROOT, "..", "..", ".."))
-OUT = os.path.join(ROOT, "residual_optimal.json")
+OUT = data_path("residual_optimal.json")
 
 CONS = set("bcdfghjklmnpqrstvwxyz")
 VOW = set("aeiou")
@@ -65,7 +66,7 @@ def main(dry_run: bool = False) -> dict:
     WORDS = e.lex.solution_words
 
     # ---- (1) identify residuals via the CURRENT engine (greedy, hard, hints)
-    sol_csv = os.path.join(REPO_ROOT, "valid_solutions.csv")
+    sol_csv = data_path("valid_solutions.csv")
     SOL = pd.read_csv(sol_csv)["word"].tolist()
     residuals = []
     for sec in SOL:

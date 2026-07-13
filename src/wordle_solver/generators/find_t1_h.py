@@ -1,9 +1,10 @@
 import sys, time, os
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import pandas as pd
+from wordle_solver.utils import data_path
 from wordle_solver.engine import WordleEngine
 
-SOL = pd.read_csv("valid_solutions.csv")["word"].tolist()
+SOL = pd.read_csv(data_path("valid_solutions.csv"))["word"].tolist()
 # h-family: all solution words containing 'h' (these are the only words that
 # can ever be hinted with 'h' as their first-revealed consonant).
 H = [w for w in SOL if "h" in w]
@@ -66,7 +67,7 @@ if __name__ == "__main__":
     print("RESULT best:", best, flush=True)
     if best:
         import json
-        with open("t1_h_opening.json", "w") as f:
+        with open(data_path("t1_h_opening.json"), "w") as f:
             # store word + its solution index
             json.dump({"h": SOL.index(best[0])}, f)
         print("written t1_h_opening.json", flush=True)

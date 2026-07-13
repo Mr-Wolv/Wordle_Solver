@@ -9,28 +9,35 @@ exe finds it via wordle_solver.utils.resource_path (-> sys._MEIPASS).
 
 import os
 
-# This spec lives at <repo>/src/wordle_solver/desktop/desktop_app.spec, so the
-# repo root is two directories up from SPECPATH.
+# This spec lives at <repo>/src/wordle_solver/desktop/desktop_app.spec.
+# SPECPATH = <repo>/src/wordle_solver/desktop ; three ".." land on <repo>.
 REPO_ROOT = os.path.abspath(os.path.join(SPECPATH, "..", "..", ".."))
-APP = os.path.join(REPO_ROOT, "src", "wordle_solver", "desktop", "desktop_app.py")
-ENTRY = os.path.join(SPECPATH, "..")  # package parent, for pathex
+PKG = os.path.join(REPO_ROOT, "src", "wordle_solver")  # the import package
+DATA = os.path.join(PKG, "data")
+ASSETS = os.path.join(PKG, "assets")
+WEB = os.path.join(PKG, "web")
+APP = os.path.join(PKG, "desktop", "desktop_app.py")
+# pathex must let PyInstaller import the `wordle_solver` package.
+pathex_root = os.path.join(REPO_ROOT, "src")
 
 datas = [
-    (os.path.join(REPO_ROOT, "web"), "web"),
-    (os.path.join(REPO_ROOT, "scientific_word_data.csv"), "."),
-    (os.path.join(REPO_ROOT, "wordle_full_matrix.npy"), "."),
-    (os.path.join(REPO_ROOT, "valid_solutions.csv"), "."),
-    (os.path.join(REPO_ROOT, "turn1_cache.json"), "."),
-    (os.path.join(REPO_ROOT, "residual_optimal.json"), "."),
-    (os.path.join(REPO_ROOT, "residual_optimal_nohint.json"), "."),
-    (os.path.join(REPO_ROOT, "t1_h_opening.json"), "."),
-    (os.path.join(REPO_ROOT, "icon.ico"), "."),
-    (os.path.join(REPO_ROOT, "splash.html"), "."),
+    (WEB, "web"),
+    (os.path.join(DATA, "scientific_word_data.csv"), "data"),
+    (os.path.join(DATA, "wordle_full_matrix.npy"), "data"),
+    (os.path.join(DATA, "valid_solutions.csv"), "data"),
+    # NOTE: turn-1 openings are cached IN-MEMORY only by the engine (see
+    # engine._load_turn1_cache); there is no turn1_cache.json artifact to
+    # bundle. Do not add one here or the build breaks on a clean checkout.
+    (os.path.join(DATA, "residual_optimal.json"), "data"),
+    (os.path.join(DATA, "residual_optimal_nohint.json"), "data"),
+    (os.path.join(DATA, "t1_h_opening.json"), "data"),
+    (os.path.join(ASSETS, "icon.ico"), "assets"),
+    (os.path.join(ASSETS, "splash.html"), "assets"),
 ]
 
 a = Analysis(
     [APP],
-    pathex=[REPO_ROOT, os.path.join(REPO_ROOT, "src")],
+    pathex=[pathex_root],
     binaries=[],
     datas=datas,
     hiddenimports=[
@@ -69,14 +76,14 @@ exe = EXE(
     upx=True,
     upx_exclude=[],
     runtime_tmpdir=None,
-    splash=os.path.join(REPO_ROOT, "splash.bmp"),
+    splash=os.path.join(ASSETS, "splash.bmp"),
     console=False,
     disable_windowed_traceback=False,
     argv_emulation=False,
     target_arch=None,
     codesign_identity=None,
     entitlements_file=None,
-    icon=os.path.join(REPO_ROOT, "icon.ico"),
+    icon=os.path.join(ASSETS, "icon.ico"),
 )
 
 coll = COLLECT(

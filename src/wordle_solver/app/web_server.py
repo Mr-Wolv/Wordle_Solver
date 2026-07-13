@@ -17,40 +17,31 @@ A submitted move encodes the five states as
 """
 
 from __future__ import annotations
-
 import os
 import sys
-from pathlib import Path
-
 from fastapi import FastAPI, HTTPException
 from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
-import wordle_solver.engine as Engine
 from wordle_solver.engine import WordleEngine
+from pathlib import Path
 
-# Repo-root resolution. In dev this file lives at
-# <repo>/src/wordle_solver/app/web_server.py, so the repo root is two
-# directories up. In a frozen bundle ``sys._MEIPASS`` is the bundle root
-# (where the ``datas`` — including ``web/`` — are unpacked).
-def _repo_root() -> Path:
-    try:
-        return Path(sys._MEIPASS)  # type: ignore[attr-defined]
-    except Exception:
-        # Walk up from this file until we find the repo root (the directory
-        # that contains both ``web/`` and ``wordle_full_matrix.npy``).
-        d = Path(__file__).resolve().parent
-        for _ in range(6):
-            if (d / "web").is_dir() and (d / "wordle_full_matrix.npy").exists():
-                return d
-            d = d.parent
-        return Path(__file__).resolve().parent.parent.parent.parent
+from wordle_solver.utils import web_path
+from wordle_solver.engine.modes import VOWELS, CONSONANTS
+from wordle_solver.engine.game_mode import GameMode, FlowError, MAX_HINTS
 
-ROOT = _repo_root()
-WEB_DIR = ROOT / "web"
+WEB_DIR = Path(web_path(""))
 
 MAX_HINTS = 2  # NYT rule: exactly one consonant AND one vowel
+
+# Back-compat shim: the desktop app and dev server call configure_engine()
+# to bind a per-instance port. The turn-1 cache is in-memory only (see
+# engine._load_turn1_cache), so there is nothing to bind — keep the call a
+# harmless no-op so existing boot code keeps working.
+def configure_engine(port: int) -> None:
+    return None
+
 
 # State the frontend can never derive on its own (the engine is the
 # source of truth; we only echo what it tells us, plus the minimal
@@ -58,25 +49,25 @@ MAX_HINTS = 2  # NYT rule: exactly one consonant AND one vowel
 app = FastAPI(title="Wordle Strat-Console")
 engine = WordleEngine()
 
+# ── locked 6-mode flow controller ────────────────────────────────────────
+# A single GameMode instance owns the mode lock + hint budget for the current
+# game. It is (re)created by POST /api/start with one of the six mode keys;
+# until then no play is possible. The engine is bound to it via set_mode so
+# specialist dispatch + scoring are driven by the locked domain spec.
+game_mode: GameMode | None = None
 
-def configure_engine(port: int) -> None:
-    """Bind the engine to the desktop app's chosen port (per-instance cache).
-
-    Guarded so a second call in the same process can't silently move the
-    cache file out from under an already-running game.
-    """
-    if getattr(engine, "_port", None) not in (None, port):
-        import logging
-        logging.getLogger(__name__).warning(
-            "engine port already set to %s, ignoring re-bind to %s",
-            engine._port, port,
-        )
-        return
-    engine._port = port
+# ── clean-shutdown signalling ────────────────────────────────────────────────
+# A request to POST /api/shutdown (or the desktop app closing) sets this flag;
+# the dev server's watchdog observes it and stops the uvicorn loop. Kept at
+# module level (registered before the root StaticFiles mount) so the route is
+# never shadowed by the static mount.
+shutdown_requested = False
 
 
-hard_mode = False  # local flag mirrored into get_suggestions(is_hard_mode=...)
-won_flag = False   # sticky win state so the banner survives a page refresh
+def request_shutdown() -> None:
+    """Flag the running server to stop at the next watchdog tick."""
+    global shutdown_requested
+    shutdown_requested = True
 
 
 # ── request / response models ───────────────────────────────────────────────
@@ -104,57 +95,122 @@ def _err(status: int, kind: str, title: str, message: str) -> HTTPException:
 
 
 def _state() -> dict:
-    strat, cands = engine.get_suggestions(is_hard_mode=hard_mode)
+    if game_mode is None:
+        # No interaction yet — the domain DEFAULTS to normal 0 hints. Show a
+        # populated, ready board so the UI is alive on load.
+        engine.set_mode("normal_0")
+        strat, cands = engine.get_suggestions(is_hard_mode=False)
+        return {
+            "turn": 1, "pool": int(engine.possible_indices.size),
+            "hard": False, "mode": "normal_0", "mode_locked": False,
+            "hint_budget": MAX_HINTS, "hinted": [],
+            "hint_label": "OPTIONAL hint: reveal 1 consonant + 1 vowel",
+            "hint_remaining": "1 consonant + 1 vowel",
+            "strat": strat[:12], "cands": cands[:12],
+            "specialist": False, "solved": False, "started": False,
+        }
+    gm = game_mode
+    # The engine domain is DERIVED from the user's Normal/Hard choice + the
+    # number of hints taken. Keep the engine bound to that derived domain.
+    engine.set_mode(gm.mode_key)
+    strat, cands = engine.get_suggestions(is_hard_mode=gm.hard)
     hinted = sorted(engine.hinted_letters)
-    hint_label = _hint_label(hinted)
+    hint_label = _hint_label(hinted, gm.hint_budget)
     pool = int(engine.possible_indices.size)
-    # The residual specialist returns a single forced-optimal guess when hard
-    # mode + NYT hints steer the pool into a precomputed cluster. Surfacing a
-    # note stops the 1-item SOLVE list from reading like "pool pruned to 1".
-    specialist = bool(hard_mode and engine.hinted_letters and len(strat) == 1
+    specialist = bool(gm.hard and engine.hinted_letters and len(strat) == 1
                       and pool > 1)
     return {
-        "turn": engine.turn,  # 1-based: turn 1 = first guess yet to be made
+        "turn": gm.turn,  # 1-based: turn 1 = first guess yet to be made
         "pool": pool,
-        "hard": hard_mode,
-        "hard_locked": engine.turn > 1,  # frontend shows an X on the toggle
+        "hard": gm.hard,
+        "mode": gm.spec.key,
+        "mode_locked": gm.mode_locked,    # False before turn 1, True after
+        "hint_budget": gm.hint_budget,
         "hinted": hinted,
         "hint_label": hint_label,
-        "hint_remaining": _hint_remaining(hinted),
+        "hint_remaining": _hint_remaining(hinted, gm.hint_budget),
         "strat": strat[:12],
         "cands": cands[:12],
         "specialist": specialist,
-        "solved": won_flag,
+        "solved": gm.over and _is_win(),
+        "started": True,
     }
 
 
-def _hint_remaining(hinted: list[str]) -> str:
+def _is_win() -> bool:
+    """Win = all five tiles green. The board tracks this via update_state;
+    we approximate the sticky win flag from the engine + a solved pool of 1
+    that equals the last guess. The frontend records the explicit win on
+    submit, so we mirror it here through the game_mode flag."""
+    return getattr(game_mode, "_won", False)
+
+
+def _hint_remaining(hinted: list[str], budget: int) -> str:
     """Human phrase for what the hint workflow still accepts (or 'complete')."""
-    vowels = {c for c in hinted if c in Engine.VOWELS}
-    cons = {c for c in hinted if c in Engine.CONSONANTS}
+    if len(hinted) >= budget:
+        return "complete"
+    vowels = {c for c in hinted if c in VOWELS}
+    cons = {c for c in hinted if c in CONSONANTS}
     need = []
-    if not cons:
+    if len(cons) == 0 and len(hinted) < budget:
         need.append("1 consonant")
-    if not vowels:
+    if len(vowels) == 0 and len(hinted) < budget:
         need.append("1 vowel")
     return " + ".join(need) if need else "complete"
 
 
-def _hint_label(hinted: list[str]) -> str:
-    # The game is fully solvable with no hints (100% no-hint closure), so the
-    # hint is OPTIONAL and framed as such — never as required.
+def _hint_label(hinted: list[str], budget: int) -> str:
     if not hinted:
+        if budget == 0:
+            return "No hints in this mode"
         return "OPTIONAL hint: reveal 1 consonant + 1 vowel"
-    vowels = {c for c in hinted if c in Engine.VOWELS}
-    cons = {c for c in hinted if c in Engine.CONSONANTS}
+    vowels = {c for c in hinted if c in VOWELS}
+    cons = {c for c in hinted if c in CONSONANTS}
+    if len(hinted) >= budget:
+        return f"KNOWN: {', '.join(h.upper() for h in hinted)} — complete"
     if vowels and cons:
         return f"KNOWN: {', '.join(h.upper() for h in hinted)} — complete"
-    if vowels and not cons:
+    if vowels and len(cons) == 0:
         return f"KNOWN: {', '.join(h.upper() for h in hinted)} — need 1 consonant"
     return f"KNOWN: {', '.join(h.upper() for h in hinted)} — need 1 vowel"
 
 
 # ── API ─────────────────────────────────────────────────────────────────────
+def _ensure_game() -> "GameMode":
+    """Lazily establish the default domain (normal_0) on first interaction.
+
+    The domain DEFAULTS to normal 0 hints. Toggling Hard or logging a hint
+    live-switches the domain (normal_0 -> hard_0, or 0-hint -> 1/2 hints);
+    everything locks after the first guess. No explicit "start" call needed.
+    Returns the live (non-None) GameMode.
+    """
+    global game_mode
+    if game_mode is None:
+        engine.reset()
+        game_mode = GameMode()  # normal_0 by default
+    return game_mode
+
+
+class HardReq(BaseModel):
+    on: bool  # Normal/Hard toggle. Live before turn 1; locked after.
+
+
+@app.post("/api/hard")
+def toggle_hard(req: HardReq) -> dict:
+    """Live Normal/Hard toggle. Switches the derived domain in real time
+    (normal_0 <-> hard_0) WITHOUT wiping any hints already taken. Refused
+    once the mode is locked (after the first guess)."""
+    gm = _ensure_game()
+    if gm.over:
+        raise _err(409, "LOGIC_ERROR", "Game already over",
+                   "This game is finished. Hit SYSTEM RESET to play again.")
+    try:
+        gm.toggle_hard(req.on)
+    except FlowError as e:
+        raise _err(409, "LOGIC_ERROR", "Mode locked", e.message)
+    return _state()
+
+
 @app.get("/api/state")
 def get_state() -> dict:
     return _state()
@@ -162,14 +218,12 @@ def get_state() -> dict:
 
 @app.post("/api/submit")
 def submit_move(move: Move) -> dict:
-    global hard_mode, won_flag
+    global game_mode
+    gm = _ensure_game()
+    if gm.over:
+        raise _err(409, "LOGIC_ERROR", "Game already over",
+                   "This game is finished. Hit SYSTEM RESET to play again.")
     guess = move.guess.strip().lower()
-    if won_flag:
-        raise _err(409, "LOGIC_ERROR", "Game already solved",
-                   "The puzzle is solved. Hit SYSTEM RESET to play again.")
-    if engine.turn > 6:
-        raise _err(409, "LOGIC_ERROR", "Out of turns",
-                   "All 6 guesses are used. Hit SYSTEM RESET to play again.")
     if len(guess) != 5 or not guess.isalpha():
         raise _err(400, "INPUT_ERROR", "Not a 5-letter word",
                    f"'{move.guess.strip().upper() or '(empty)'}' isn't 5 letters. "
@@ -191,65 +245,64 @@ def submit_move(move: Move) -> dict:
             "pattern. Re-check each tile's color"
             + (" (an active hint also restricts the pool)."
                if engine.hinted_letters else "."))
-    won_flag = move.colors == [2, 2, 2, 2, 2]
+    won = move.colors == [2, 2, 2, 2, 2]
+    gm.on_submit(won)  # locks the mode + records win/over
     state = _state()
     state["last_guess"] = guess
-    state["solved"] = won_flag
+    state["solved"] = won
     return state
 
 
 @app.post("/api/hint")
 def log_hint(hint: Hint) -> dict:
+    gm = _ensure_game()
+    if gm.over:
+        raise _err(409, "LOGIC_ERROR", "Game already over",
+                   "This game is finished. Reset to start a new game.")
     letter = hint.letter.strip().lower()
-    if won_flag:
-        raise _err(409, "LOGIC_ERROR", "Game already solved",
-                   "The puzzle is solved. Reset to start a new game.")
-    if len(letter) != 1 or not letter.isalpha():
-        raise _err(400, "INPUT_ERROR", "Not a single letter",
-                   f"'{hint.letter.strip().upper() or '(empty)'}' isn't one "
-                   "letter A–Z. Enter a single hint letter.")
-    if letter in engine.hinted_letters:
-        raise _err(400, "INPUT_ERROR", "Already logged",
-                   f"You already logged the hint '{letter.upper()}'.")
-    nv, nc, total = Engine._hint_counts(engine.hinted_letters)
-    if total >= Engine.MAX_HINTS:
-        raise _err(409, "LOGIC_ERROR", "Hints full",
-                   "NYT gives exactly 1 consonant + 1 vowel. Both are logged.")
-    if letter in Engine.VOWELS and nv >= 1:
-        raise _err(409, "LOGIC_ERROR", "Vowel already set",
-                   "Only one vowel hint is allowed. Log a consonant instead.")
-    if letter in Engine.CONSONANTS and nc >= 1:
-        raise _err(409, "LOGIC_ERROR", "Consonant already set",
-                   "Only one consonant hint is allowed. Log a vowel instead.")
-    ok = engine.add_hint(letter)
-    if not ok:
+    # Enforce the locked-mode + NYT hint rule centrally through GameMode.
+    try:
+        gm.add_hint(letter)
+    except FlowError as e:
+        if e.code == "GAME_OVER":
+            raise _err(409, "LOGIC_ERROR", "Game over", e.message)
+        if e.code == "MODE_LOCKED":
+            raise _err(409, "LOGIC_ERROR", "Hints locked", e.message)
+        if e.code == "HINT_RULE":
+            # Map to the precise reason the user can act on.
+            if "vowel" in e.message:
+                raise _err(409, "LOGIC_ERROR", "Vowel already set", e.message)
+            if "consonant" in e.message:
+                raise _err(409, "LOGIC_ERROR", "Consonant already set", e.message)
+            if "already logged" in e.message:
+                raise _err(400, "INPUT_ERROR", "Already logged", e.message)
+            raise _err(409, "LOGIC_ERROR", "Hints full", e.message)
+        raise _err(400, "INPUT_ERROR", "Not a letter", e.message)
+    # Commit the validated hint to the engine (it applies the pruning).
+    if not engine.add_hint(letter):
+        # Should be unreachable: GameMode validated the same rule, but the
+        # engine ALSO checks the hint doesn't empty the pool. Surface it.
         raise _err(409, "LOGIC_ERROR", "Hint eliminates every answer",
                    f"No remaining answer contains '{letter.upper()}'. "
                    "That hint contradicts your guesses so far.")
     return _state()
 
 
-@app.post("/api/hard")
-def set_hard(payload: dict | None = None) -> dict:
-    global hard_mode, won_flag
-    want = (not hard_mode if not (isinstance(payload, dict) and "on" in payload)
-            else bool(payload["on"]))
-    # Hard mode is a pre-game commitment: it can only change on turn 1.
-    if engine.turn > 1 and want != hard_mode:
-        raise _err(409, "LOGIC_ERROR", "Hard mode is locked",
-                   "Hard mode can only be set before your first guess. "
-                   "Reset to change it.")
-    hard_mode = want
-    return _state()
-
-
 @app.post("/api/reset")
 def reset() -> dict:
-    global hard_mode, won_flag
+    global game_mode
     engine.reset()
-    hard_mode = False
-    won_flag = False
+    game_mode = None
     return _state()
+
+
+@app.post("/api/shutdown")
+def shutdown() -> dict:
+    """Ask the dev server to stop. The desktop app calls this on window
+    close; the dev server's watchdog observes ``shutdown_requested`` and
+    exits the uvicorn loop (releasing the matrix mmap)."""
+    request_shutdown()
+    return {"ok": True}
 
 
 # ── static frontend ─────────────────────────────────────────────────────────

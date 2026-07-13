@@ -30,8 +30,10 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import numpy as np
 from wordle_solver.engine import WordleEngine
 
+from wordle_solver.utils import data_path
+
 ROOT = os.path.dirname(os.path.abspath(__file__))
-OUT = os.path.join(ROOT, "residual_optimal_nohint.json")
+OUT = data_path("residual_optimal_nohint.json")
 
 e = WordleEngine()
 # disable specialists so the replay reflects CLEAN greedy behaviour

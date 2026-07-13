@@ -1,6 +1,16 @@
 {
   "include": ["."],
-  "exclude": ["**/__pycache__", "**/.venv", "**/node_modules"],
+  "exclude": [
+    "**/__pycache__",
+    "**/.venv",
+    "**/node_modules",
+    "dist",
+    "build",
+    "**/dist/**",
+    "**/build/**",
+    ".gate_cache",
+    "tests/.gate_cache"
+  ],
   "venvPath": ".",
   "venv": ".venv",
   "typeCheckingMode": "basic",

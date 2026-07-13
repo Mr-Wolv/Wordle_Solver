@@ -78,10 +78,10 @@ The project requires Python 3.12 (specifically 3.12.0 or higher).
 ### 4. Prepare the Data (first time only)
 
 Quick steps:
-
+Quick steps:
 ```bash
-python Data.py
-python build_matrix.py      # bakes the answer-only pattern matrix (seconds)
+python -m wordle_solver.generators.build_word_data   # fetches Zipf freqs -> scientific_word_data.csv
+python -m wordle_solver.generators.build_matrix      # bakes the answer-only pattern matrix (seconds)
 ```
 
 ### 5. Launch the Solver
@@ -125,19 +125,78 @@ Click the RESET button any time to start a new game (clears state and reloads th
 
 ---
 
+## The Six Locked Domains
+
+The solver treats the game as **six strictly separate domains**. Editing one
+domain's configuration can never affect another's behavior or numbers.
+
+| Domain | Easy/Hard | Hints |
+|--------|-----------|-------|
+| `normal_0` | Normal (easy) | 0 |
+| `hard_0`  | Hard | 0 |
+| `normal_1` | Normal | 1 |
+| `hard_1`  | Hard | 1 |
+| `normal_2` | Normal | 2 |
+| `hard_2`  | Hard | 2 |
+
+**How the domain is chosen (backend owns this — the UI just reports it):**
+
+1. The domain **defaults to `normal_0`** the moment the board loads.
+2. The **Normal/Hard toggle** live-switches the domain
+   (`normal_0` ↔ `hard_0`) in real time, *before* the first guess. Toggling
+   back works too — it never wipes the hints you've taken.
+3. **Logging a hint** live-promotes the current 0-hint domain to 1 or 2 hints
+   (`normal_0` → `normal_1` → `normal_2`, same for hard). A hint is one
+   letter of the secret; the NYT rule applies — **exactly one vowel + one
+   consonant** when two are taken (never two vowels, never two consonants,
+   never more than two).
+4. **After the first guess is submitted, everything locks.** The derived
+   domain (easy/hard *and* hint count) is frozen for the whole game — the
+   toggle and hint box are disabled, and any further toggle/hint/restart is
+   refused with a loud error.
+
+**Why this matters for correctness:** because the six domains are isolated,
+the engine routes every decision (specialist selection, scoring weights)
+through the *active domain's* configuration only. The hard-no-hint
+optimal-shredder tree, the 2-hint residual specialist, and the turn-1 `h`
+family-safe override are each scoped to exactly the domain that needs them
+(`hard_0` / `hard_2` / `hard_2` respectively); `normal_2` stays pure greedy.
+A change to one domain cannot silently alter another.
+
+The full 100% solve proof across **all 2,315 words × the six domains** lives
+in `test_game_contract.py` (cached, run via `pytest -m exhaustive`, or read
+from the on-disk cache). `test_modes.py` is the fast guard that the
+*structure* of the six domains (isolation, real-time derivation, lock, hint
+rule) is correct so a regression can't change their shape.
+
+---
+
 ## Project Architecture
 
 ```
 Wordle_Solver/
-├── src/wordle_solver/            # the installable package (single import root)
+├── src/wordle_solver/          # the installable package (single import root)
 │   ├── __init__.py               # public surface: WordleEngine, score_guesses, play_one_game
-│   ├── utils.py                  # resource_path (PyInstaller-safe asset resolution)
-│   ├── engine/
-│   │   ├── lexicon.py            # Word/answer data + the 2315×2315 pattern matrix (PatternMatrix)
-│   │   ├── scoring.py            # Vectorized information-gain scoring (np.add.at)
-│   │   ├── patterns.py           # Canonical pattern math + the SINGLE shared exact minimax
-│   │   ├── engine.py             # Solver controller: state, hard-mode rule, hints, caches, specialists
-│   │   └── game.py               # Headless self-play (play_one_game; used by benchmarks/tests)
+│   ├── utils.py                  # resource_path + data_path/asset_path/web_path (PyInstaller-safe, cwd-independent)
+│   ├── data/                    # ALL data + generated artifacts (committed or built)
+│   │   ├── valid_solutions.csv   # the 2,315 official NYT answers (source data)
+│   │   ├── valid_guesses.csv     # the ~12,972 allowed guess words (source data)
+│   │   ├── scientific_word_data.csv  # probability-weighted word list (build_word_data)
+│   │   ├── wordle_full_matrix.npy  # precomputed pattern matrix (build_matrix)
+│   │   ├── turn1_cache.json      # precomputed turn-1 suggestions (engine cache)
+│   │   ├── residual_optimal.json # residual-cluster optimal trees (build_residual_optimal)
+│   │   ├── residual_optimal_nohint.json # hard no-hint closure tree (build_nohint_tree)
+│   │   └── t1_h_opening.json   # family-safe turn-1 'h' opening (find_t1_h)
+│   ├── assets/                  # icons + splash (icon.ico, splash.html, splash.bmp)
+│   ├── web/                     # real DOM frontend (index.html, styles.css, app.js)
+│   │   ├── engine/
+│   │   │   ├── lexicon.py            # Word/answer data + the 2315×2315 pattern matrix (PatternMatrix)
+│   │   │   ├── scoring.py            # Vectorized information-gain scoring (np.add.at)
+│   │   │   ├── patterns.py           # CANONICAL pattern math + the SINGLE shared exact minimax
+│   │   │   ├── modes.py              # The six locked domains: frozen ModeSpec registry (flags + scoring params + specialist partition)
+│   │   │   ├── game_mode.py          # Flow controller: real-time (hard, hint) → derived domain; locks after turn 1; NYT hint rule
+│   │   │   ├── engine.py             # Solver controller: state, hard-mode rule, hints, caches, specialists (routes via active ModeSpec)
+│   │   │   └── game.py               # Headless self-play (play_one_game / play_mode; used by benchmarks/tests)
 │   ├── app/
 │   │   ├── web_server.py         # FastAPI backend wrapping the engine + JSON state API (serves web/)
 │   │   └── cli.py                # Terminal solver
@@ -149,21 +208,13 @@ Wordle_Solver/
 │       ├── build_word_data.py    # Probability-weighted word list (scientific_word_data.csv)
 │       ├── build_matrix.py       # Vectorized builder for the answer-only pattern matrix
 │       ├── build_residual_optimal.py  # residual_optimal.json (optimal-minimax sub-trees)
-│       ├── build_nohint_tree.py  # residual_optimal_nohint.json (hard no-hint closure tree)
+│       ├── build_nohint_tree.py # residual_optimal_nohint.json (hard no-hint closure tree)
 │       ├── find_t1_h.py          # Family-safe turn-1 'h' opening (t1_h_opening.json)
 │       ├── prove_hard_ceiling.py # Prover for the hard no-hint structural ceiling
 │       └── build_all.py          # Orchestrates every generator in order (python -m …)
-├── web/                          # Real DOM frontend (index.html, styles.css, app.js) — primary UI
-├── benchmark.py / profiler.py / tester.py  # Optional dev tools
-├── test_*.py                     # pytest suite (engine, scoring, lexicon, cli, web, app, game contract)
-├── valid_solutions.csv           # The 2,315 official NYT answers (source data)
-├── valid_guesses.csv             # The ~12,972 allowed guess words (source data)
-├── wordle_full_matrix.npy        # Precomputed pattern matrix (output of build_matrix.py)
-├── turn1_cache.json              # Precomputed turn-1 suggestions (output of the engine, cached)
-├── residual_optimal.json         # Residual-cluster optimal trees (output of build_residual_optimal.py)
-├── residual_optimal_nohint.json # Hard no-hint closure tree (output of build_nohint_tree.py)
-├── t1_h_opening.json             # Family-safe turn-1 'h' opening index (output of find_t1_h.py)
-└── requirements.txt              # Dependencies
+├── tests/                        # pytest suite (engine, scoring, lexicon, cli, web, app, game contract)
+├── requirements.txt              # Dependencies
+└── pyproject.toml             # Packaging + package data (data/, assets/, web/)
 ```
 
 > The engine, web/desktop front-ends, and benchmarking are completely
@@ -171,7 +222,10 @@ Wordle_Solver/
 > (data + matrix) and `scoring.py` (math) and can be used headlessly in a
 > script, Jupyter notebook, or another front-end. All exact minimax lives in
 > `wordle_solver.engine.patterns` so the live solver and the offline builders
-> never drift.
+> never drift. Data artifacts and the web frontend live **inside the package**
+> (`src/wordle_solver/{data,assets,web}`), so `resource_path`/`data_path`
+> resolve them relative to the package — never the current working directory —
+> which keeps the app portable across machines, CI, and the frozen bundle.
 
 
 
@@ -332,6 +386,7 @@ python -m pytest test_lexicon.py -v  # a single file, verbose
 | Test file | What it proves |
 |-----------|----------------|
 | `test_engine.py` | State machine, pattern math, hard-mode legality (D1 regression), endgame shortcut, hint pruning, full games |
+| `test_modes.py` | The six locked domains: registry shape, isolation, real-time derivation + lock after turn 1, NYT hint rule, engine dispatch isolation |
 | `test_scoring.py` | `score_guesses` invariants: entropy beats worst-case, endgame formula, hard-mode penalty, pattern decode |
 | `test_lexicon.py` | `PatternMatrix` vs brute-force `calculate_pattern` (answers + SHRED on-the-fly), symmetry, `row_for`/`rows` |
 | `test_cli.py` | `cli.parse_pattern` accepts valid `02220` strings and rejects malformed input |
@@ -344,11 +399,11 @@ python -m pytest test_lexicon.py -v  # a single file, verbose
 
 | File | Purpose | Must Run? |
 | :--- | :--- | :--- |
-| `build_word_data.py` | Downloads word frequencies, builds `scientific_word_data.csv` | Once (first‑time setup) |
-| `build_matrix.py` | Builds the answer-only pattern matrix `wordle_full_matrix.npy` | Once (after `build_word_data.py`) |
-| `build_residual_optimal.py` | Builds `residual_optimal.json` (optimal-minimax sub-trees for the residual clusters) | Once |
-| `build_nohint_tree.py` | Builds `residual_optimal_nohint.json` (hard no-hint closure tree) | Once |
-| `find_t1_h.py` | Proves & writes `t1_h_opening.json` (family-safe turn-1 `h` opening = `abhor`) | Once |
+| `src/wordle_solver/data/build_word_data.py` | Downloads word frequencies, builds `scientific_word_data.csv` | Once (first‑time setup) |
+| `src/wordle_solver/data/build_matrix.py` | Builds the answer-only pattern matrix `wordle_full_matrix.npy` | Once (after `build_word_data.py`) |
+| `src/wordle_solver/generators/build_residual_optimal.py` | Builds `residual_optimal.json` (optimal-minimax sub-trees for the residual clusters) | Once |
+| `src/wordle_solver/generators/build_nohint_tree.py` | Builds `residual_optimal_nohint.json` (hard no-hint closure tree) | Once |
+| `src/wordle_solver/generators/find_t1_h.py` | Proves & writes `t1_h_opening.json` (family-safe turn-1 `h` opening = `abhor`) | Once |
 | `src/wordle_solver/engine/lexicon.py` | Word/answer data + `PatternMatrix` (loads the matrix) | No (imported by the engine) |
 | `src/wordle_solver/engine/scoring.py` | Vectorized information-gain scoring | No (imported by the engine) |
 | `src/wordle_solver/engine/engine.py` | Solver controller class (`WordleEngine`) + specialists | No (imported by the front-ends) |
@@ -356,21 +411,20 @@ python -m pytest test_lexicon.py -v  # a single file, verbose
 | `src/wordle_solver/app/web_server.py` | FastAPI backend for the web/desktop UI | No (imported by desktop_app) |
 | `src/wordle_solver/desktop/desktop_app.py` | pywebview desktop application | Entry point |
 | `src/wordle_solver/desktop/desktop_app.spec` | PyInstaller build spec for the one-folder bundle | Build only |
-| `src/wordle_solver/utils.py` | Shared utilities (e.g., `resource_path` for PyInstaller) | No (imported) |
+| `src/wordle_solver/utils.py` | Shared utilities (`resource_path` / `data_path` / `assets_path` / `web_path`, PyInstaller-safe, cwd-independent) | No (imported) |
 | `src/wordle_solver/engine/game.py` | Headless self-play (benchmarks/tests) | No (imported) |
-| `tester.py` | CI‑compatible multi‑process test harness | Optional |
-| `benchmark.py` | Detailed performance benchmark with turn distribution | Optional |
-| `profiler.py` | cProfile hot‑spot analyser | Optional |
-| `test_engine.py` … `test_game_contract.py` | pytest suite (engine, scoring, lexicon, cli, web, app, contract) | Optional |
+| `src/wordle_solver/tools/benchmark.py` | Detailed performance benchmark with turn distribution | Optional |
+| `src/wordle_solver/tools/profiler.py` | cProfile hot-spot analyser | Optional |
+| `tests/test_engine.py` … `tests/test_game_contract.py` | pytest suite (engine, scoring, lexicon, cli, web, app, contract) | Optional |
 | `requirements.txt` | All Python packages needed | Install once |
-| `scientific_word_data.csv` | Word probabilities (generated by `build_word_data.py`) | Generated |
-| `wordle_full_matrix.npy` | Pattern matrix (generated by `build_matrix.py`) | Generated |
-| `valid_solutions.csv` | Kaggle‑sourced answer word list (the 2,315 NYT answers) | Source data |
-| `valid_guesses.csv` | Kaggle‑sourced guess word list (~12,972 allowed words) | Source data |
-| `turn1_cache.json` | Precomputed turn-1 suggestions (cached by the engine) | Generated |
-| `residual_optimal.json` | Precomputed residual-cluster optimal trees (generated by `build_residual_optimal.py`) | Generated |
-| `residual_optimal_nohint.json` | Hard no-hint closure tree (generated by `build_nohint_tree.py`) | Generated |
-| `t1_h_opening.json` | Family-safe turn-1 `h` opening index (generated by `find_t1_h.py`) | Generated |
+| `src/wordle_solver/data/scientific_word_data.csv` | Word probabilities (generated by `build_word_data.py`) | Generated |
+| `src/wordle_solver/data/wordle_full_matrix.npy` | Pattern matrix (generated by `build_matrix.py`) | Generated |
+| `src/wordle_solver/data/valid_solutions.csv` | Kaggle-sourced answer word list (the 2,315 NYT answers) | Source data |
+| `src/wordle_solver/data/valid_guesses.csv` | Kaggle-sourced guess word list (~12,972 allowed words) | Source data |
+| `src/wordle_solver/data/turn1_cache.json` | Precomputed turn-1 suggestions (cached by the engine) | Generated |
+| `src/wordle_solver/data/residual_optimal.json` | Precomputed residual-cluster optimal trees (generated by `build_residual_optimal.py`) | Generated |
+| `src/wordle_solver/data/residual_optimal_nohint.json` | Hard no-hint closure tree (generated by `build_nohint_tree.py`) | Generated |
+| `src/wordle_solver/data/t1_h_opening.json` | Family-safe turn-1 `h` opening index (generated by `find_t1_h.py`) | Generated |
 
 
 

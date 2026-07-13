@@ -28,7 +28,8 @@ import time
 
 import pandas as pd
 
-from _game import play_one_game
+from ..engine.game import play_one_game
+from wordle_solver.utils import data_path
 
 
 def worker_task(word_chunk, log_queue, is_hard_mode, use_hints):
@@ -76,7 +77,7 @@ def run_benchmark(
     """
     # Load solution words
     try:
-        solutions_df = pd.read_csv("valid_solutions.csv")
+        solutions_df = pd.read_csv(data_path("valid_solutions.csv"))
         all_words = solutions_df.iloc[:, 0].tolist()
     except Exception as e:
         print(f"Error loading words: {e}")
@@ -152,6 +153,7 @@ def run_benchmark(
 
     return {
         "mode": "HARD" if is_hard else "NORMAL",
+        "samples": len(test_pool),
         # Whether hints were supplied matters: this is NOT the raw optimal
         # ceiling unless hints=False. Name the field by what it actually
         # measures so CI JSON can never be misread as the ceiling.

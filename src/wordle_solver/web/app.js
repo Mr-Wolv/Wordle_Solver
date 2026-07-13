@@ -223,6 +223,7 @@ class App {
   }
 
   _renderState(st) {
+    document.documentElement.dataset.appReady = "1";
     this.solved = st.solved;
     this.$("chip-pool-n").textContent = st.pool;
     this.$("chip-turn-n").textContent = st.turn;
@@ -231,12 +232,15 @@ class App {
     mode.classList.toggle("hard", st.hard);
     this.$("hint-status").textContent = st.hint_label;
 
-    // Hard mode is locked after the first guess. Show it disabled AND mark
-    // the toggle with an X so it's obvious the mode can no longer change.
+    // Switches (Normal/Hard + hints) are open only before the first guess.
+    // The backend locks the domain once turn 1 is submitted; reflect that by
+    // disabling the toggle + hint input and marking the toggle as locked.
+    const locked = !!st.mode_locked;
     const hard = this.$("hard");
-    hard.disabled = !!st.hard_locked;
+    hard.disabled = locked;
     hard.checked = st.hard;
-    this.$("hard-toggle").classList.toggle("locked", !!st.hard_locked);
+    this.$("hard-toggle").classList.toggle("locked", locked);
+    this.$("hint-letter").disabled = locked;
 
     // Specialist note: when hard+hints force a single optimal line, the SOLVE
     // list legitimately has one entry — say so, so it doesn't look like a bug.
@@ -254,6 +258,28 @@ class App {
     this._renderBoard();
     this._renderSuggestions("solve-list", st.strat, "score");
     this._renderSuggestions("shred-list", st.cands, "winp");
+  }
+
+  async toggleHard(on) {
+    // Live Normal/Hard toggle. The backend derives the full domain from this
+    // + however many hints are taken before turn 1, switching in real time.
+    try {
+      const st = await this._post("/api/hard", { on });
+      this.history = [];
+      this.entryColors = [0, 0, 0, 0, 0];
+      this.solved = false;
+      this.typed = "";
+      this.$("hint-letter").value = "";
+      this._renderBoard();
+      this._renderState(st);
+      this.clearAlert();
+      this.alert("INFO", on ? "Hard mode ON" : "Normal mode ON",
+        on ? "Suggestions restricted to the live pool." :
+            "Suggestions may use any word for maximum information.");
+    } catch (err) {
+      this.$("hard").checked = !on;
+      this.alertErr(err);
+    }
   }
 
   _renderSuggestions(elId, list, kind) {
@@ -306,7 +332,7 @@ class App {
       this._renderBoard();
       this._renderState(st);
       this.clearAlert();
-      if (st.solved) this.alert("SUCCESS", "Solved!", `${guess} in ${st.turn - 1} — nice.`);
+      if (st.solved) this.alert("SUCCESS", "Solved!", `${guess} in ${st.turn} — nice.`);
     } catch (err) {
       // Row stays editable on any failure so the user can fix colors/word.
       this.alertErr(err);
@@ -334,20 +360,6 @@ class App {
     }
   }
 
-  async toggleHard(on) {
-    try {
-      const st = await this._post("/api/hard", { on });
-      this._renderState(st);
-      this.clearAlert();
-      this.alert("INFO", on ? "Hard mode ON" : "Hard mode OFF",
-        on ? "Suggestions are now restricted to the live pool."
-           : "Suggestions may use any word for maximum information.");
-    } catch (err) {
-      this.$("hard").checked = !on;
-      this.alertErr(err);
-    }
-  }
-
   async reset() {
     try {
       const st = await this._post("/api/reset");
@@ -359,7 +371,7 @@ class App {
       this._renderBoard();
       this._renderState(st);
       this.clearAlert();
-      this.alert("INFO", "New game", "Board cleared — good luck.");
+      this.alert("INFO", "New game", "Pick a mode to start a fresh puzzle.");
     } catch (err) {
       this.alertErr(err);
     }

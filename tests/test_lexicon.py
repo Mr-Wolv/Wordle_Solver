@@ -10,12 +10,12 @@ import random
 import numpy as np
 import pandas as pd
 import pytest
-
 from wordle_solver.engine.lexicon import Lexicon, PatternMatrix
 from wordle_solver.engine import WordleEngine
+from wordle_solver.utils import data_path
 
-SOLUTIONS = pd.read_csv("valid_solutions.csv")["word"].tolist()
-ALL_WORDS = pd.read_csv("valid_guesses.csv")["word"].tolist()
+SOLUTIONS = pd.read_csv(data_path("valid_solutions.csv"))["word"].tolist()
+ALL_WORDS = pd.read_csv(data_path("valid_guesses.csv"))["word"].tolist()
 
 
 @pytest.fixture(scope="module")

@@ -22,6 +22,7 @@ Example: --pattern 02220 means:
 import argparse
 import sys
 from wordle_solver.engine import WordleEngine
+from wordle_solver.engine.modes import MODE_REGISTRY
 
 
 def parse_pattern(pattern_str: str) -> int:
@@ -67,6 +68,7 @@ def show_suggestions(engine, is_hard: bool):
 def interactive_mode(is_hard: bool):
     """Run the interactive solver."""
     engine = WordleEngine()
+    engine.set_mode("hard_0" if is_hard else "normal_0")  # lock the domain
     print(f"{'=' * 55}")
     print(f"  WORDLE SOLVER  --  {'HARD' if is_hard else 'NORMAL'} MODE")
     print(f"  Enter your guesses and colour patterns interactively.")
@@ -139,6 +141,7 @@ def interactive_mode(is_hard: bool):
 def single_shot(guess: str, pattern_str: str, is_hard: bool):
     """Run a single turn and show suggestions."""
     engine = WordleEngine()
+    engine.set_mode("hard_0" if is_hard else "normal_0")  # lock the domain
     pattern_int = parse_pattern(pattern_str)
 
     if guess not in engine.all_words:

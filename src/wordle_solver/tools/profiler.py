@@ -19,7 +19,7 @@ import io
 import random
 import sys
 
-from _game import play_one_game
+from ..engine.game import play_one_game
 
 
 def main():
@@ -52,8 +52,9 @@ def main():
         secret = args.word.lower().strip()
     else:
         from pandas import read_csv
+        from wordle_solver.utils import data_path
 
-        df = read_csv("valid_solutions.csv")
+        df = read_csv(data_path("valid_solutions.csv"))
         secret = random.choice(df.iloc[:, 0].tolist()).upper()
 
     is_hard = args.mode == "hard"

@@ -1,12 +1,15 @@
 """Wordle Strat-Console — desktop wrapper.
 
-Runs the FastAPI web backend (``web_server``) in a background thread and
-opens the DOM frontend (``web/``) inside a native **pywebview** window.
+Opens the DOM frontend (``web/``) inside a native **pywebview** window and
+runs the FastAPI backend as a *child* ``dev_server`` process (not in-process).
+The child is launched with ``--parent-pid`` so it self-terminates the instant
+this game session ends — a closed window can never leave a zombie server
+holding the (memory-mapped) matrix file open.
 
 Runtime robustness (the point of this rewrite):
   * PORT is picked at runtime from a free socket (env WSC_PORT overrides the
     preferred base). No more "port 8753 already in use" dead ends.
-  * The backend is started with RETRY across several candidate ports; a
+  * The backend child is started with RETRY across several candidate ports; a
     transient bind clash is absorbed automatically.
   * If the app can't come up (or crashes mid-run), the user sees a clear,
     non-technical error card — what happened, why, and how to fix it — with
@@ -19,7 +22,6 @@ from __future__ import annotations
 
 import ctypes
 import os
-import socket
 import sys
 import tempfile
 import threading
@@ -39,47 +41,13 @@ def file_uri(path: str) -> str:
     return Path(path).resolve().as_uri()
 import webview  # light import — window layer only; backend imported lazily
 from webview.window import Window
+from wordle_solver.utils import assets_path, find_free_port
 
-ROOT = Path(__file__).resolve().parent
-# Resolve the repo root so that ``web/``, ``splash.html``, ``icon.ico`` and
-# ``splash.bmp`` resolve correctly whether we are running from
-# <repo>/src/wordle_solver/desktop/ in dev or from a frozen bundle
-# (``sys._MEIPASS``).
-try:
-    _ROOT = Path(sys._MEIPASS)  # type: ignore[attr-defined]
-except Exception:
-    _d = Path(__file__).resolve().parent
-    _ROOT = _d
-    for _ in range(6):
-        if (Path(_d) / "web").is_dir() and (Path(_d) / "splash.html").exists():
-            _ROOT = _d
-            break
-        _d = Path(_d).parent
-    ROOT = _ROOT
 PREFERRED_PORT = int(os.environ.get("WSC_PORT", "8753"))
-MAX_ATTEMPTS = 6
+MAX_ATTEMPTS = 6  # how many consecutive ports to try before giving up
 POLL_TIMEOUT = 20.0  # generous: first /api/state triggers the lazy matrix load
 
 APP_WINDOW = None  # set after window creation; used by the crash handler
-
-
-# ── port selection ──────────────────────────────────────────────────────────
-def _find_free_port(preferred: int) -> int:
-    """Return the first free 127.0.0.1 port at or after ``preferred``."""
-    for off in range(MAX_ATTEMPTS):
-        p = preferred + off
-        if p > 65535:
-            break
-        with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
-            try:
-                s.bind(("127.0.0.1", p))
-                return p
-            except OSError:
-                continue
-    raise RuntimeError(
-        f"no free localhost port found near {preferred} "
-        f"(tried {MAX_ATTEMPTS} ports)."
-    )
 
 
 def _wait_for_server(port: int, timeout: float = POLL_TIMEOUT) -> bool:
@@ -189,64 +157,158 @@ def _crash_hook(et, ev, tb):
 sys.excepthook = _crash_hook
 
 
-# ── backend boot (with retry) ─────────────────────────────────────────────────
-def boot(window) -> bool:
-    """Start the backend on a runtime-chosen free port, retrying on failure.
+# ── backend boot ────────────────────────────────────────────────────────────
+# SOURCE / dev runs: the backend runs as a *child* ``dev_server`` process. This
+# is deliberate — it is the single server implementation, and it self-terminates
+# when this parent process dies (--parent-pid watchdog) or on /api/shutdown, so
+# a closed window can never leave a zombie server holding the matrix open.
+# FROZEN bundle: a subprocess can't import the packaged modules (sys.executable
+# is the EXE), so we run the server in-process. CRITICAL: in the frozen bundle
+# the server is started in ``start_frozen_server`` *before* ``webview.start`` so
+# the backend is ALWAYS reachable — even on a headless host or when WebView2
+# cannot open a native window — rather than only after the window comes up. This
+# also means a broken WebView2 can no longer silently take the whole backend
+# down (the old bug: boot() was called from inside webview.start, so a window
+# failure left the port unbound and the bundle unverifiable). Either way the
+# server's life is bound to the game session — it runs on a daemon thread and
+# the whole process (and its memory-mapped matrix) is torn down on window close.
+_DEV_SERVER_PROC = None  # module-level handle so close paths can stop it
+_FROZEN_SERVER_PORT: int | None = None  # port the frozen bundle's server bound
 
-    Returns True on success (window swapped to the live app) or False after
-    exhausting attempts (a fatal card with a Retry button is shown).
+
+def _is_frozen() -> bool:
+    return bool(
+        getattr(sys, "frozen", False) or getattr(sys, "_MEIPASS", None)
+    )
+
+
+def start_frozen_server(port: int) -> None:
+    """Frozen bundle: start the in-process HTTP backend on ``port``.
+
+    Called from ``main()`` *before* ``webview.start`` so the solver is live
+    and verifiable even when no native window can be created (headless CI /
+    a host without WebView2). The server runs on a daemon thread; the process
+    — and therefore the server and its memory-mapped matrix — is released on
+    window close. The splash already points at ``port`` (it is included in the
+    splash URL as ``#port=...``), so the frontend connects immediately.
     """
-    import wordle_solver.app.web_server as web_server  # heavy import (numpy/pandas/fastapi) — runs BEHIND the splash
     import uvicorn
+    import wordle_solver.app.web_server as web_server
 
+    web_server.configure_engine(port)
+    web_server.set_load_status("Loading word matrix…")
+    try:
+        web_server.engine.get_suggestions()
+        web_server.engine.get_suggestions(is_hard_mode=True)
+    except Exception:
+        pass
+    web_server.set_load_status("Ready")
+    srv = uvicorn.Server(
+        uvicorn.Config(web_server.app, host="127.0.0.1", port=port, log_level="error")
+    )
+    threading.Thread(target=srv.run, daemon=True).start()
+    global _FROZEN_SERVER_PORT
+    _FROZEN_SERVER_PORT = port
+
+
+def _stop_dev_server() -> None:
+    """Ask the backend child to exit cleanly, then hard-kill if needed."""
+    global _DEV_SERVER_PROC
+    proc = _DEV_SERVER_PROC
+    if proc is None:
+        return
+    _DEV_SERVER_PROC = None
+    try:
+        import urllib.request
+
+        # best-effort clean shutdown via the dev server's own endpoint
+        urllib.request.urlopen(
+            f"http://127.0.0.1:{getattr(proc, '_port', 0)}/api/shutdown",
+            timeout=1.0,
+        )
+    except Exception:
+        pass
+    # give uvicorn a beat to drain, then ensure it's gone
+    for _ in range(20):
+        if proc.poll() is not None:
+            return
+        time.sleep(0.1)
+    try:
+        proc.kill()
+    except Exception:
+        pass
+
+
+def boot(window) -> bool:
+    """Start the backend and point the window at it.
+
+    In source/dev, the backend is a *session-bound* dev-server child. In a
+    frozen bundle it runs in-process (a subprocess can't import the packaged
+    code). Returns True on success or False after exhausting port retries.
+
+    Every child spawned by a failed attempt is reaped immediately, so a retry
+    can never leave an orphaned server holding the matrix open — the exact
+    trap that used to lock rebuilds.
+
+    Args:
+        window: the pywebview window to load the app into.
+    """
+    my_pid = os.getpid()
     last_err = None
     for attempt in range(1, MAX_ATTEMPTS + 1):
+        proc = None          # in-flight dev-server child (source mode)
         try:
-            port = _find_free_port(PREFERRED_PORT + attempt - 1)
-            # Tell the splash which port to poll for status (it may differ
-            # from the one it was opened with).
+            port = find_free_port(PREFERRED_PORT + attempt - 1)
             try:
                 window.evaluate_js(f"if(window.__setPort)window.__setPort({port});")
             except Exception:
                 pass
-            web_server.set_load_status("Loading word matrix…")
-            # Tag the engine with this port so its turn-1 cache file is
-            # per-instance (two dev instances never write the same file).
-            try:
-                web_server.configure_engine(port)
-            except Exception:
-                pass
-            web_server.set_load_status("Warming up solver…")
-            # NOTE: we let uvicorn bind the port itself (port=port), NOT a
-            # pre-bound fd. uvicorn's fd path does socket.fromfd(..., AF_UNIX)
-            # internally, which is unavailable on Windows and crashes the boot.
-            # Multi-instance safety comes from the runtime free-port scan above
-            # (each instance claims its own 127.0.0.1 port) plus the per-instance
-            # cache keyed by that port — both verified.
-            cfg = uvicorn.Config(
-                web_server.app, host="127.0.0.1", port=port, log_level="error"
-            )
-            threading.Thread(
-                target=lambda: uvicorn.Server(cfg).run(), daemon=True
-            ).start()
+
+            if _is_frozen():
+                # Frozen bundle: the server was already started in
+                # ``start_frozen_server`` (called from main() *before*
+                # webview.start) so it is reachable even without a window. We
+                # just point the window at the already-live port and return.
+                if _wait_for_server(port):
+                    window.load_url(f"http://127.0.0.1:{port}/")
+                    return True
+                show_fatal(
+                    "Backend failed to start",
+                    "The solver engine couldn't be reached after launch.",
+                    [
+                        "Relaunch the app — the backend should start automatically.",
+                    ],
+                    RuntimeError(f"frozen server on :{port} never came up"),
+                )
+                return False
+            else:
+                # Source/dev: spawn the shared dev server as a child; it warms
+                # its own cache and self-terminates when this process ends.
+                import subprocess
+
+                proc = subprocess.Popen(
+                    [
+                        sys.executable, "-m", "wordle_solver.app.dev_server",
+                        "--port", str(port), "--parent-pid", str(my_pid),
+                    ],
+                    stdout=subprocess.PIPE,
+                    stderr=subprocess.STDOUT,
+                    text=True,
+                )
+                proc._port = port
+
             if _wait_for_server(port):
-                # Drive ONE real turn-1 computation so the (per-instance) cache
-                # is baked before the user plays — keeps the first move instant.
-                web_server.set_load_status("Compiling suggestions…")
-                try:
-                    web_server.engine.get_suggestions()
-                    web_server.engine.get_suggestions(is_hard_mode=True)
-                except Exception:
-                    pass
-                web_server.set_load_status("Ready")
+                global _DEV_SERVER_PROC
+                _DEV_SERVER_PROC = proc  # None in frozen mode (in-process)
                 window.load_url(f"http://127.0.0.1:{port}/")
                 return True
-            last_err = RuntimeError(
-                f"backend accepted no connections on port {port} "
-                f"within {POLL_TIMEOUT:.0f}s"
-            )
+            # didn't come up — reap THIS attempt's child so it can't linger
+            if proc is not None:
+                _reap(proc)
         except Exception as e:  # bind clash, import error, etc.
             last_err = e
+            if proc is not None:
+                _reap(proc)
         time.sleep(0.5)
 
     show_fatal(
@@ -263,6 +325,18 @@ def boot(window) -> bool:
     return False
 
 
+def _reap(proc) -> None:
+    """Hard-kill a dev-server child and wait for it to exit (no lingering)."""
+    try:
+        proc.kill()
+    except Exception:
+        pass
+    try:
+        proc.wait(timeout=5)
+    except Exception:
+        pass
+
+
 def close_with_splash(window) -> None:
     """App-driven exit: show an inline 'shutting down' screen, then quit.
 
@@ -272,6 +346,9 @@ def close_with_splash(window) -> None:
     process down cleanly on its own. """
     global APP_WINDOW
     APP_WINDOW = None
+    # Stop the backend child first so the closing screen isn't fighting a
+    # dying server, and the matrix file is released before the process ends.
+    _stop_dev_server()
     try:
         closing_html = (
             "<!doctype html><html><head><meta charset='utf-8'>"
@@ -302,13 +379,13 @@ def close_with_splash(window) -> None:
 # ── window + lifecycle ─────────────────────────────────────────────────────────
 def main():
     global APP_WINDOW
-    icon = str(ROOT / "icon.ico") if (ROOT / "icon.ico").exists() else None
-    splash_path = str(ROOT / "splash.html")
+    icon = assets_path("icon.ico") if os.path.exists(assets_path("icon.ico")) else None
+    splash_path = assets_path("splash.html")
 
     # Pick an initial free port so the splash knows where to poll; boot() may
     # still choose a different one (and will tell the splash via __setPort).
     try:
-        initial_port = _find_free_port(PREFERRED_PORT)
+        initial_port = find_free_port(PREFERRED_PORT)
     except RuntimeError as e:
         show_fatal(
             "No network port available",
@@ -324,7 +401,7 @@ def main():
     try:
         window = webview.create_window(
             title="Wordle Strat-Console",
-            url=file_uri(str(ROOT / "splash.html")) + f"#port={initial_port}",
+            url=file_uri(assets_path("splash.html")) + f"#port={initial_port}",
             width=1240,
             height=840,
             min_size=(900, 640),
@@ -347,6 +424,26 @@ def main():
         )
         return
 
+    # Frozen bundle: the HTTP backend must be reachable BEFORE the native
+    # window is created, so the solver is verifiable even on a headless host
+    # (or when WebView2 can't open a window). Start it now; boot() will simply
+    # point the window at the already-live port. On a normal desktop the
+    # window opens next and connects to the same port.
+    if _is_frozen():
+        try:
+            start_frozen_server(initial_port)
+        except Exception as e:  # pragma: no cover - defensive
+            show_fatal(
+                "Backend failed to start",
+                "The solver engine couldn't be launched.",
+                [
+                    "Relaunch the app — the backend starts automatically.",
+                    "If it repeats, the technical detail below is what to report.",
+                ],
+                e,
+            )
+            return
+
     APP_WINDOW = window
 
     _leaving = {"native": False}
@@ -358,6 +455,7 @@ def main():
         if _leaving["native"]:
             return
         _leaving["native"] = True
+        _stop_dev_server()  # release the matrix before the process ends
         if window is not None:
             try:
                 window.destroy()
@@ -382,19 +480,23 @@ def main():
     window.expose(retry, exit_app)
 
     # Start the heavy boot on a worker thread so the splash spinner keeps
-    # animating while Python imports the backend.
+    # animating while Python imports the backend. In the frozen bundle the
+    # server is already up, so boot() only needs to point the window at it.
     def _start():
         threading.Thread(target=boot, args=(window,), daemon=True).start()
 
     try:
         webview.start(_start, gui=None, debug=False, icon=icon)
     except Exception as e:
+        # A failed WebView2 init must not take the backend down: the frozen
+        # server is already running (daemon thread) and will be torn down with
+        # the process. Surface the reason, but the backend stays verifiable.
         show_fatal(
             "Could not start the interface",
             "The WebView2 interface failed to initialize.",
             [
                 "Install/repair the Microsoft Edge WebView2 Runtime.",
-                "Relaunch the app.",
+                "Relaunch the app — the backend keeps running until you close it.",
             ],
             e,
         )

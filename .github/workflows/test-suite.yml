@@ -34,8 +34,8 @@ jobs:
         # or the multi-hour find_t1_h.py brute-force prover. We only (re)build
         # the fast derivable artifacts from the committed CSV.
         run: |
-          python build_matrix.py
-          python -c "from Engine import WordleEngine; e=WordleEngine(); e.get_suggestions(); e.get_suggestions(is_hard_mode=True)"
+          python -m wordle_solver.generators.build_matrix
+          python -c "from wordle_solver.engine import WordleEngine; e=WordleEngine(); e.get_suggestions(); e.get_suggestions(is_hard_mode=True)"
 
       - name: Run tests
         run: |

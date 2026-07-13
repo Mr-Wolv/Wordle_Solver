@@ -21,12 +21,11 @@ MATRIX_FILE = "wordle_full_matrix.npy"   # kept filename so the spec/.gitignore 
 SOLUTIONS_FILE = "valid_solutions.csv"
 WORDS_FILE = "scientific_word_data.csv"
 
-# pattern encoding: grey=0, yellow=1, green=2  -> base-3 integer over 5 slots
+# pattern encoding: grey=0, yellow=1, green=2 -> base-3 integer over 5 slots
 _POW3 = np.array([3**i for i in range(5)], dtype=np.int16)
 
-
-def pattern_int_to_tuple(p: int) -> tuple[int, ...]:
-    return tuple((p // (3**i)) % 3 for i in range(5))
+# shared pattern math (calculate_pattern, pattern_int_to_tuple) lives in
+# engine.patterns — the single source of truth.
 
 
 class Lexicon:
@@ -61,6 +60,30 @@ class PatternMatrix:
         )
         self.ansi = lexicon.solution_idx            # answer -> full-dict index
         self.n = lexicon.n_solutions
+
+    def close(self) -> None:
+        """Release the memory-mapped matrix file handle.
+
+        The matrix is loaded with ``mmap_mode="r"`` so the underlying file
+        stays open for the process lifetime. Call this on clean teardown
+        (dev-server / desktop exit) so no dangling fd is GC'd at exit.
+        """
+        mat = getattr(self, "matrix", None)
+        if mat is None:
+            return
+        base = getattr(mat, "_mmap", None) or getattr(mat, "base", None)
+        try:
+            if base is not None and hasattr(base, "close"):
+                base.close()
+        except Exception:
+            pass
+
+    def __del__(self) -> None:
+        # Safety net: never let the mmap'd fd leak via GC at interpreter exit.
+        try:
+            self.close()
+        except Exception:
+            pass
 
     @property
     def answers(self) -> list[str]:

@@ -15,7 +15,7 @@ dependencies = [
     "uvicorn",
     "pydantic",
     "pywebview",
-    "webview",
+    "wordfreq",
 ]
 
 [project.optional-dependencies]
@@ -25,3 +25,10 @@ provers = ["wordfreq"]
 
 [tool.setuptools.packages.find]
 where = ["src"]
+
+[tool.setuptools.package-data]
+wordle_solver = [
+    "data/*",
+    "assets/*",
+    "web/*",
+]

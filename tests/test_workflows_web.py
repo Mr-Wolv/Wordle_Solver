@@ -1,34 +1,28 @@
 """Workflow V&V — the user-facing flows, happy + unhappy.
 
-This is the mirror of the backend's flow at the UI boundary: every *actionable
-workflow* a human can perform in the desktop/web app, asserted against the real
-DOM (Playwright) exactly like the backend's component tests assert against the
-engine. No canvas, no vision guessing — concrete elements, classes, ARIA, text.
+Mirror of the backend flow at the UI boundary: every actionable workflow a
+human can perform, asserted against the real DOM (Playwright). The UI shows
+a Normal/Hard toggle + hint entry; the backend ESTABLISHES the domain (one
+of six) from (hard, hint count) and locks it after the first guess.
 
-Workflows covered (each has a happy path and at least one unhappy path):
-  W1  Initialize game        (board paints, chips correct, no stale state)
-  W2  Enter a guess          (type -> board row fills; backspace trims)
-  W3  Color the feedback     (click tiles absent->present->correct)
-  W4  Submit a losing guess  (row locks as history, pool narrows, turn++)
-  W5  Submit a winning guess (banner, solved sticky, submit blocked)
-  W6  Detect impossible fb   (409 LOGIC, turn frozen, row stays editable)
-  W7  Hard mode OFF->ON      (toggle before move; chips + alerts reflect)
-  W8  Hard mode lock         (toggle disabled + X after first move)
-  W9  Hint happy path        (1 vow + 1 cons, status + pool narrow)
-  W10 Hint rule violations   (dup, 2nd vowel, 2nd cons, non-letter)
-  W11 System reset           (clears board/chips/alerts; fresh game)
-  W12 Game over boundary     (6 rows used -> submit blocked w/ clear msg)
-  W13 Solved boundary        (further submit blocked w/ clear msg)
-  W14 Forced-optimal note    (hard+hints -> single SOLVE entry explained)
-  W15 Keyboard ergonomics    (Enter in hint field logs hint)
-
-Run with chromium installed (the suite self-skips otherwise):
-    python -m pytest test_workflows_web.py -q
-The module boots its own web_server on an ephemeral port, so no external
-server needs to be running.
+Workflows covered:
+  W1  Initialize game
+  W2  Enter a guess
+  W3  Color the feedback
+  W4  Submit a losing guess
+  W5  Submit a winning guess
+  W6  Detect impossible fb
+  W7  Mode lock after first move (toggle + hints disabled)
+  W8  Hard toggle derives domain
+  W9  Hint happy path (1 vowel + 1 consonant) -> normal_2
+  W10 Hint rule violations (dup, 2nd vowel, 2nd cons, non-letter)
+  W11 System reset
+  W12 Game over boundary (6 rows used -> submit blocked)
+  W13 Solved boundary (further submit blocked)
+  W14 Forced-optimal note (hard + 2 hints)
+  W15 Keyboard ergonomics (Enter logs hint)
 """
 
-import os
 import socket
 import threading
 
@@ -36,29 +30,9 @@ import pytest
 import uvicorn
 from playwright.sync_api import sync_playwright
 
-# ── Browser/CI guard ──────────────────────────────────────────────
-# Mirrors test_e2e_web.py: the workflow suite drives the REAL DOM with
-# Playwright, so it can only run where chromium is installed. On hosts
-# without it (restricted networks, headless CI without the binary) the
-# whole module is skipped at collection time — exactly like the e2e suite
-# — so `pytest` stays green instead of erroring on a missing browser.
-_BROWSER_DIR = os.environ.get("PLAYWRIGHT_BROWSERS_PATH") or os.path.join(
-    os.path.expanduser("~"), ".cache", "ms-playwright"
-)
-_chromium_present = os.path.isdir(_BROWSER_DIR) and any(
-    n.startswith("chromium") for n in os.listdir(_BROWSER_DIR)
-)
-pytestmark = pytest.mark.skipif(
-    not _chromium_present,
-    reason="Playwright chromium not installed (`playwright install chromium`)",
-)
+from _chromium import pytestmark
 
-# real 5-letter answer secrets used to drive deterministic colorings
-SECRET = {
-    "crane": "crane",   # all-green win
-    "slate": "slate",
-    "mouse": "mouse",
-}
+SECRET = {"crane": "crane", "slate": "slate", "mouse": "mouse"}
 
 
 def _free_port() -> int:
@@ -71,14 +45,6 @@ def _free_port() -> int:
 
 @pytest.fixture(scope="module")
 def base_url():
-    """Boot the real FastAPI backend on an ephemeral port for the run.
-
-    The workflow tests assert against the live server DOM (just like a
-    human would), so we stand up web_server ourselves instead of assuming
-    something is already listening on :8000. The engine is bound to the
-    chosen port so the per-instance turn-1 cache file can't collide with a
-    dev server the user might have running elsewhere.
-    """
     import wordle_solver.app.web_server as backend
 
     port = _free_port()
@@ -88,7 +54,6 @@ def base_url():
     )
     thread = threading.Thread(target=server.run, daemon=True)
     thread.start()
-    # wait for the port to come up (cheap readiness check)
     for _ in range(100):
         try:
             with socket.create_connection(("127.0.0.1", port), timeout=0.5):
@@ -97,6 +62,14 @@ def base_url():
             if not thread.is_alive():
                 raise RuntimeError("web_server failed to start")
     return f"http://127.0.0.1:{port}"
+
+
+def _hard(page, on: bool):
+    # Live Normal/Hard toggle (the game auto-starts as normal_0 on load).
+    page.evaluate(
+        "async (on) => { const r = await fetch('/api/hard',{method:'POST',"
+        "headers:{'Content-Type':'application/json'},"
+        "body:JSON.stringify({on})}); return r.status; }", on)
 
 
 def _set(page, idx, state):
@@ -119,24 +92,36 @@ def _set_word(page, word, colors):
 
 
 def _submit(page):
-    """Submit via Enter (global key) or the on-screen ENTER action key."""
     page.keyboard.press("Enter")
+    # Wait for the app to finish the async submit (busy clears in finally)
+    # before any further action — otherwise the entry buffer can be locked
+    # (busy) and the next guess's keystrokes are silently ignored.
+    page.wait_for_function(
+        "() => !window.app || window.app.busy === false", timeout=8000)
 
 
 def _wait_alert_clear(page):
-    """SUCCESS/INFO alerts auto-dismiss after 3.5s; wait for that so the next
-    assertion sees the *new* alert, not a lingering transient one."""
     try:
         page.locator("#alert").wait_for(state="hidden", timeout=4000)
     except Exception:
         pass
 
 
+def _ready(page):
+    # The board + chips are populated by JS after the async /api/state fetch.
+    # Wait for the App to mark the document ready so chip reads aren't racing
+    # the initial render.
+    page.wait_for_function(
+        "() => document.documentElement.dataset.appReady === '1'", timeout=8000)
+
+
 def _turn(page):
+    _ready(page)
     return int(page.locator("#chip-turn-n").inner_text())
 
 
 def _pool(page):
+    _ready(page)
     return int(page.locator("#chip-pool-n").inner_text())
 
 
@@ -152,13 +137,32 @@ def browser():
 def page(browser, base_url):
     pg = browser.new_page()
     pg.goto(base_url)
-    # The backend (web_server) is module-scoped, so its engine state (won_flag,
-    # hard_mode, pool) survives across tests. Reset it so every test starts
-    # from a clean game regardless of test order.
-    pg.evaluate("window.app.reset()")
-    pg.wait_for_timeout(120)
+    # defaults to normal_0 on load; nothing to start explicitly
+    # Wait for the App to finish its initial /api/state render so chip reads
+    # aren't racing the async fetch.
+    pg.wait_for_function(
+        "() => document.documentElement.dataset.appReady === '1'", timeout=8000)
     yield pg
     pg.close()
+
+
+def _reset(page):
+    # Clears the shared backend game state (module-level global on the
+    # module-scoped server) AND re-renders the frontend so the Normal/Hard
+    # toggle is re-enabled and the hint status is fresh. Clicking #reset runs
+    # the frontend reset() which POSTs /api/reset and re-renders.
+    page.click("#reset")
+    page.wait_for_timeout(120)
+
+
+@pytest.fixture(autouse=True)
+def _reset_each(page):
+    # Each test must start from a clean normal_0 domain with the switches
+    # enabled. The web module keeps game state in a module-level global shared
+    # by the whole module-scoped server, and the frontend App keeps its own
+    # UI state, so reset both (this is what makes the "lock after turn 1"
+    # tests stable).
+    _reset(page)
 
 
 # ── W1: initialize ─────────────────────────────────────────────
@@ -168,8 +172,7 @@ def test_W1_initialize(page):
     assert _turn(page) == 1
     assert _pool(page) == 2315
     assert page.locator("#chip-mode").inner_text() == "NORMAL"
-    assert page.locator("#hard").is_disabled() is False
-    assert page.locator("#hard-toggle .hard-lock").is_hidden()
+    assert not page.locator("#hard").is_disabled()
 
 
 # ── W2: enter a guess ──────────────────────────────────────────
@@ -178,7 +181,6 @@ def test_W2_enter_guess(page):
     page.wait_for_selector(".board .row.active .tile.entry")
     active = page.locator(".board .row.active .tile.entry")
     assert active.nth(0).inner_text() == "C" and active.nth(4).inner_text() == "E"
-    # backspace flows back into the board
     page.keyboard.press("Backspace")
     page.keyboard.press("Backspace")
     page.wait_for_timeout(80)
@@ -187,16 +189,16 @@ def test_W2_enter_guess(page):
     assert active.nth(2).inner_text() == "A"
 
 
-# ── W3: color the feedback (unhappy: mis-colored then corrected) ─
+# ── W3: color the feedback ─────────────────────────────────────
 def test_W3_color_feedback(page):
     page.keyboard.type("crane", delay=10)
     page.wait_for_selector(".board .row.active .tile.entry")
     t = page.locator(".board .row.active .tile.entry").nth(0)
-    t.click()  # -> present
+    t.click()
     assert "present" in t.get_attribute("aria-label")
-    t.click()  # -> correct
+    t.click()
     assert "correct" in t.get_attribute("aria-label")
-    t.click()  # -> absent (cycle)
+    t.click()
     assert "absent" in t.get_attribute("aria-label")
 
 
@@ -210,7 +212,7 @@ def test_W4_submit_losing(page):
     assert 0 < _pool(page) < before
     row0 = page.locator(".board .row").nth(0)
     assert row0.inner_text().replace("\n", "").startswith("SLATE")
-    assert page.locator(".board .row.active .tile.entry").count() == 5  # next row ready
+    assert page.locator(".board .row.active .tile.entry").count() == 5
 
 
 # ── W5: submit a winning guess (happy) ─────────────────────────
@@ -220,17 +222,16 @@ def test_W5_submit_winning(page):
     page.wait_for_timeout(250)
     assert not page.locator("#banner").is_hidden()
     assert page.locator("#chip-pool-n").inner_text() == "1"
-    assert page.locator(".board .row.active .tile.entry").count() == 0  # no entry row
-    # success alert loud
+    assert page.locator(".board .row.active .tile.entry").count() == 0
     assert "SUCCESS" in page.locator("#alert").inner_text()
 
 
 # ── W6: impossible feedback (unhappy) ──────────────────────────
 def test_W6_impossible_feedback(page):
-    _set_word(page, "crane", [0, 1, 2, 0, 0])  # narrows pool (no 'a'-word left-cluster)
+    _set_word(page, "crane", [0, 1, 2, 0, 0])
     _submit(page)
     page.wait_for_timeout(250)
-    _set_word(page, "mouse", [2, 2, 2, 2, 2])   # MOUSE has no 'a', can't be in pool
+    _set_word(page, "mouse", [2, 2, 2, 2, 2])
     turn_before = _turn(page)
     _submit(page)
     page.wait_for_timeout(250)
@@ -238,46 +239,57 @@ def test_W6_impossible_feedback(page):
     assert not alert.is_hidden()
     assert "LOGIC" in alert.inner_text()
     assert "impossible" in alert.inner_text().lower()
-    assert _turn(page) == turn_before           # frozen
-    assert page.locator(".board .row.active .tile.entry").count() == 5  # still editable
+    assert _turn(page) == turn_before
+    assert page.locator(".board .row.active .tile.entry").count() == 5
 
 
-# ── W7: hard mode OFF -> ON before first move (happy) ──────────
-def test_W7_hard_on_before_move(page):
-    page.check("#hard") if False else page.click("#hard")
-    page.wait_for_timeout(200)
-    assert page.locator("#chip-mode").inner_text() == "HARD"
-    assert "INFO" in page.locator("#alert").inner_text()
-    # suggestions now reflect hard (pool unaffected at turn 1)
-    assert _pool(page) == 2315
-
-
-# ── W8: hard mode locks after first move (unhappy toggle) ──────
-def test_W8_hard_locked_after_move(page):
+# ── W7: mode lock after first move (toggle + hints disabled) ────
+def test_W7_mode_locked_after_first_move(page):
+    assert not page.locator("#hard").is_disabled()
     _set_word(page, "slate", [0, 1, 2, 0, 0])
     _submit(page)
     page.wait_for_timeout(250)
     assert page.locator("#hard").is_disabled()
-    assert not page.locator("#hard-toggle .hard-lock").is_hidden()
-    assert "locked" in page.locator("#hard-toggle .hard-lock").inner_text().lower()
-    # even a programmatic toggle is refused by the server
-    resp = page.evaluate("async () => { const r = await fetch('/api/hard',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({on:true})}); return r.status; }")
+    assert page.locator("#hint-letter").is_disabled()
+    resp = page.evaluate(
+        "async () => { const r = await fetch('/api/hard',{method:'POST',"
+        "headers:{'Content-Type':'application/json'},"
+        "body:JSON.stringify({on:true})}); return r.status; }")
     assert resp == 409
 
 
-# ── W9: hint happy path (1 vowel + 1 consonant) ────────────────
+# ── W8: hard toggle derives domain ─────────────────────────────
+def test_W8_hard_toggle_derives_domain(page):
+    page.click("#hard")
+    # Wait for the live toggle to derive the hard_0 domain (backend POST +
+    # re-render), rather than a fixed sleep that races a busy server.
+    page.wait_for_function(
+        "() => document.getElementById('chip-mode').innerText === 'HARD'",
+        timeout=8000)
+    assert page.locator("#chip-mode").inner_text() == "HARD"
+    state = page.evaluate("async () => (await fetch('/api/state')).json()")
+    assert state["mode"] == "hard_0"
+
+
+# ── W9: hint happy path (1 vowel + 1 consonant) -> normal_2 ────
 def test_W9_hint_happy(page):
     page.fill("#hint-letter", "e")
     page.click("#hint-btn")
-    page.wait_for_timeout(150)
-    assert "KNOWN: E" in page.locator("#hint-status").inner_text()
-    assert "need 1 consonant" in page.locator("#hint-status").inner_text()
+    # Wait for the live hint to derive normal_1 (backend POST + re-render).
+    page.wait_for_function(
+        "() => /KNOWN: E/.test(document.getElementById('hint-status').innerText)"
+        " && /need 1 consonant/.test(document.getElementById('hint-status').innerText)",
+        timeout=8000)
     before = _pool(page)
     page.fill("#hint-letter", "r")
     page.click("#hint-btn")
-    page.wait_for_timeout(150)
-    assert "complete" in page.locator("#hint-status").inner_text()
+    # Wait for the second hint to derive normal_2 (budget full -> 'complete').
+    page.wait_for_function(
+        "() => /complete/.test(document.getElementById('hint-status').innerText)",
+        timeout=8000)
     assert _pool(page) < before
+    mode = page.evaluate("async () => (await fetch('/api/state')).json()")["mode"]
+    assert mode == "normal_2"
 
 
 # ── W10: hint rule violations (unhappy) ────────────────────────
@@ -294,12 +306,12 @@ def test_W10_hint_violations(page):
     page.fill("#hint-letter", "e")
     page.click("#hint-btn")
     page.wait_for_timeout(120)
-    assert "INPUT" in page.locator("#alert").inner_text()  # Already logged
+    assert "INPUT" in page.locator("#alert").inner_text()
     # second vowel rejected (LOGIC)
     page.fill("#hint-letter", "a")
     page.click("#hint-btn")
     page.wait_for_timeout(120)
-    assert "LOGIC" in page.locator("#alert").inner_text()  # Vowel already set
+    assert "LOGIC" in page.locator("#alert").inner_text()
 
 
 # ── W11: system reset (happy) ──────────────────────────────────
@@ -319,21 +331,17 @@ def test_W11_system_reset(page):
 
 # ── W12: game over boundary (6 rows used) (unhappy) ────────────
 def test_W12_game_over_boundary(page):
-    # Play the engine's own top suggestion each turn (recolored from a fixed
-    # secret) until the board fills or we win — a true end-to-end playthrough.
     secret = "robot"
     for _ in range(6):
         if not page.locator(".board .row.active .tile.entry").count():
             break
         if not page.locator("#banner").is_hidden():
             break
-        # read the engine's current top suggestion from the DOM
         top = page.locator("#solve-list .sugg .word").first.inner_text()
-        # color it against the secret (real Wordle rules)
         colors = []
-        s = list(secret)
-        g = list(top.lower())
         out = [0] * 5
+        s: list[str | None] = list(secret)
+        g = list(top.lower())
         for i in range(5):
             if g[i] == s[i]:
                 out[i] = 2
@@ -345,11 +353,9 @@ def test_W12_game_over_boundary(page):
         _set_word(page, top, out)
         _submit(page)
         page.wait_for_timeout(180)
-    # either solved or board full
     board_full = page.locator(".board .row.active .tile.entry").count() == 0
     solved = not page.locator("#banner").is_hidden()
     assert board_full or solved
-    # a further submit is explained, not a confusing error
     _wait_alert_clear(page)
     page.keyboard.type("about", delay=10)
     page.wait_for_timeout(80)
@@ -373,10 +379,10 @@ def test_W13_solved_boundary(page):
     assert "Already solved" in page.locator("#alert").inner_text()
 
 
-# ── W14: forced-optimal note when hard + hints ─────────────────
+# ── W14: forced-optimal note when hard + 2 hints ────────────────
 def test_W14_forced_optimal_note(page):
     page.click("#hard")
-    page.wait_for_timeout(150)
+    page.wait_for_timeout(120)
     page.fill("#hint-letter", "h")
     page.click("#hint-btn")
     page.wait_for_timeout(150)
@@ -384,8 +390,6 @@ def test_W14_forced_optimal_note(page):
     page.click("#hint-btn")
     page.wait_for_timeout(150)
     note = page.locator("#solve-note")
-    # either the forced-optimal note shows, or pool was already solved by the
-    # specialist; either way the SOLVE intent is coherent (no silent 1-item).
     assert (not note.is_hidden()) or _pool(page) == 1
 
 
@@ -395,5 +399,4 @@ def test_W15_hint_enter_key(page):
     page.press("#hint-letter", "Enter")
     page.wait_for_timeout(150)
     assert "KNOWN: E" in page.locator("#hint-status").inner_text()
-    # the entry clears after logging
     assert page.locator("#hint-letter").input_value() == ""

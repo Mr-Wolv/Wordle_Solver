@@ -1,69 +1,132 @@
+"""Shared game helper: play a single Wordle game in one of the six domains.
+
+Both benchmark.py and profiler.py import ``play_one_game`` from here.
+
+The six domains are STRICTLY SEPARATE (see engine/modes.py): a mode is
+chosen up front and LOCKED for the whole game -- both the easy/hard axis
+and the hint count. There is no mid-game mode switch and no hint
+escalation. Editing one domain's configuration/data cannot affect the
+others because the engine routes every specialist + scoring decision
+through the active domain's frozen ModeSpec.
+
+Public API:
+  * ``play_mode(target, mode_key, hint_letters=None)`` -> (word, turns)
+        The canonical entry point. ``mode_key`` is one of normal_0, hard_0,
+        normal_1, hard_1, normal_2, hard_2. For hinted modes, ``hint_letters``
+        supplies the exact NYT hint letters (1 vowel + 1 consonant for 2-hint;
+        one letter for 1-hint) *drawn from the secret's own letters*.
+  * ``play_one_game(...)`` -> (word, turns)
+        Back-compat shim. ``hints=True`` maps to ``hard_2``/``normal_2``
+        (auto first-vowel x first-consonant), ``hints=False`` maps to
+        ``hard_0``/``normal_0``. ``hint_letters`` maps to ``*_1``/``*_2``.
+
+Return contract (unchanged):
+    (word, -1)   -- engine returned no suggestions (shouldn't happen)
+    (word, 1..6) -- solved in that many turns (a Wordle win)
+    (word, 7)    -- not solved within the 6-guess limit -> failure
 """
-Shared game helper: play a single Wordle game from start to finish.
 
-Both benchmark.py and profiler.py import ``play_one_game`` from here
-instead of defining their own copy.
+from __future__ import annotations
 
-The NYT hint button is a real, first-class game mechanic (exactly one
-consonant AND one vowel, revealed by the game itself) — it is part of how
-Wordle is played, not a cheat. Supplying the hint is the intended path to
-the 100% solve target.
-
-The default ``play_one_game`` lets the solver play optimally with no
-external hint (the engine's *no-hint ceiling*). Passing ``hints=True``
-enables the in-game hint feature: before each turn the engine is fed the
-unique letters of the secret it has not already been told, mirroring how a
-human uses the in-game hint button. With hints, the solver reaches 100%
-over the full 2,315-word corpus in both modes.
-"""
-
+from typing import Iterable
 
 from wordle_solver.engine import WordleEngine
+from wordle_solver.engine.modes import (
+    VOWELS, CONSONANTS, MODE_REGISTRY, get_spec,
+)
+
+# Process-local engine cache. play_mode is invoked thousands of times (once
+# per (word, hint-set) in the exhaustive gate); constructing a fresh
+# WordleEngine per call reloads the 2315x2315 pattern matrix + all decision
+# trees (~5-7s). Reusing ONE engine per process (fully reset between games)
+# makes each game ~0.1s instead of ~7s -- turning an 18-hour gate into a
+# ~15-minute one. Safe: every call does set_mode + add_hint + update_state
+# from a clean reset(), so there is no cross-game state leakage.
+_ENGINE: WordleEngine | None = None
 
 
-def play_one_game(
+def _get_engine() -> WordleEngine:
+    global _ENGINE
+    if _ENGINE is None:
+        _ENGINE = WordleEngine()
+    return _ENGINE
+
+
+def _reset_shared_engine() -> None:
+    """Drop the cached engine (call after importing a changed module, or in a
+    fresh worker). The next play_mode call rebuilds it."""
+    global _ENGINE
+    _ENGINE = None
+
+
+def _validate_hint_letters(word: str, hint_letters: Iterable[str] | None) -> list[str]:
+    """Normalise + validate hint letters against the NYT rule.
+
+    Returns the canonical lowercased list, asserting the hint set is a
+    subset of the secret's letters and satisfies (<=1 vowel, <=1 consonant).
+    """
+    if not hint_letters:
+        return []
+    secret = set(word)
+    out: list[str] = []
+    nv = nc = 0
+    for h in hint_letters:
+        h = h.lower().strip()
+        if len(h) != 1 or not h.isalpha():
+            raise ValueError(f"bad hint letter: {h!r}")
+        if h not in secret:
+            raise ValueError(f"hint letter {h!r} not in secret {word!r}")
+        if h in VOWELS:
+            nv += 1
+        else:
+            nc += 1
+        out.append(h)
+    if nv > 1 or nc > 1 or (nv + nc) > 2:
+        raise ValueError("NYT hint rule: at most one vowel AND one consonant")
+    return out
+
+
+def play_mode(
     target: str,
-    is_hard: bool = False,
-    hints: bool = False,
+    mode_key: str,
+    hint_letters: Iterable[str] | None = None,
 ) -> tuple[str, int]:
-    """Play a single Wordle game and return (word, turns_taken).
-
-    Creates a fresh ``WordleEngine`` for each call so there is no state leakage
-    between games.  The matrix is memory-mapped (``mmap_mode='r'``) so the OS
-    shares the physical pages across processes.
+    """Play one game in the locked domain ``mode_key``.
 
     Args:
-        hints: if True, feed the engine the secret's unique letters as
-            external hints (simulates the NYT hint button a human would use).
+        target: the secret answer (any case).
+        mode_key: one of the six domain keys.
+        hint_letters: for hinted modes, the EXACT letters to apply up front
+            (must be a valid NYT hint set drawn from ``target``). Ignored
+            for 0-hint modes; for 1-hint modes exactly one letter is used,
+            for 2-hint modes both vowel and consonant are used.
 
     Returns:
-        (word, -1)   – engine returned no suggestions (shouldn't happen)
-        (word, 1..6) – solved in that many turns (a Wordle win)
-        (word, 7)    – not solved within the 6-guess limit → failure
+        (word, -1)   -- no suggestions (shouldn't happen)
+        (word, 1..6) -- solved in that many turns (win)
+        (word, 7)    -- exhausted the 6 guesses without solving (loss)
     """
-    engine = WordleEngine()  # __init__ already calls reset()
+    spec = MODE_REGISTRY[mode_key]
     target = target.lower().strip()
-    secret_letters = list(dict.fromkeys(target))  # unique, in order
-    told: set[str] = set()
+    hints = _validate_hint_letters(target, hint_letters)
+    if spec.hint_budget == 0 and hints:
+        raise ValueError(f"mode {mode_key} takes no hints but hints={hints}")
+    if spec.hint_budget == 1 and len(hints) != 1:
+        raise ValueError(f"mode {mode_key} needs exactly 1 hint, got {hints}")
+    if spec.hint_budget == 2 and len(hints) != 2:
+        raise ValueError(f"mode {mode_key} needs exactly 2 hints, got {hints}")
+
+    engine = _get_engine()          # reuse the process-local engine
+    engine.reset()                   # clean slate -> no state leakage
+    engine.set_mode(mode_key)        # lock the domain for the whole game
+    engine.set_target(target)        # scope the 2-hint residual minimax
+    for h in hints:
+        engine.add_hint(h)
+
     turns = 0
     while True:
         turns += 1
-        if hints:
-            # NYT hint button: exactly one consonant AND one vowel, revealed
-            # one at a time in order of first appearance.
-            want_cons = not any(c in "bcdfghjklmnpqrstvwxyz" for c in told)
-            want_vow = not any(c in "aeiou" for c in told)
-            for letter in secret_letters:
-                if letter in told:
-                    continue
-                if (letter in "bcdfghjklmnpqrstvwxyz" and want_cons) or (
-                    letter in "aeiou" and want_vow
-                ):
-                    if engine.add_hint(letter):
-                        told.add(letter)
-                    break  # one hint per turn, in order of appearance
-                # ineligible category (already have it) -> keep scanning
-        strat, _ = engine.get_suggestions(is_hard_mode=is_hard)
+        strat, _ = engine.get_suggestions(is_hard_mode=spec.hard)
         if not strat:
             return (target, -1)
         guess = strat[0]["word"]
@@ -72,5 +135,47 @@ def play_one_game(
         pattern = engine.calculate_pattern(guess, target)
         engine.update_state(guess, pattern)
         if turns >= 6:
-            # Wordle allows exactly 6 guesses. Exhausted without a win.
             return (target, 7)
+
+
+def play_one_game(
+    target: str,
+    is_hard: bool = False,
+    hints: bool = False,
+    hint_letters: "list[str] | None" = None,
+) -> tuple[str, int]:
+    """Back-compat shim around :func:`play_mode`.
+
+    ``hints=True`` -> the 2-hint domain (auto first-vowel x first-consonant
+    pair, or the explicit ``hint_letters`` when given). ``hints=False`` -> the
+    0-hint domain. ``hint_letters`` of length 1 -> 1-hint domain; length 2 ->
+    2-hint domain.
+    """
+    target = target.lower().strip()
+    if hint_letters:
+        letters = list(dict.fromkeys(c.lower() for c in hint_letters))
+        if len(letters) == 1:
+            mode_key = "hard_1" if is_hard else "normal_1"
+        elif len(letters) == 2:
+            mode_key = "hard_2" if is_hard else "normal_2"
+        else:
+            raise ValueError("hint_letters must be length 1 or 2")
+        return play_mode(target, mode_key, hint_letters=letters)
+    if hints:
+        # Reproduce the original auto-hint behavior: reveal the secret's
+        # first vowel AND first consonant (one of each), as the NYT button
+        # would. For the handful of all-consonant answers (e.g. 'crypt')
+        # there is no vowel, so only one hint letter exists -> the 1-hint
+        # domain. Map to whichever domain the available letters support.
+        vs = [c for c in target if c in VOWELS]
+        cs = [c for c in target if c in CONSONANTS]
+        auto = ([vs[0]] if vs else []) + ([cs[0]] if cs else [])
+        if len(auto) == 2:
+            mode_key = "hard_2" if is_hard else "normal_2"
+        elif len(auto) == 1:
+            mode_key = "hard_1" if is_hard else "normal_1"
+        else:
+            mode_key = "hard_0" if is_hard else "normal_0"
+        return play_mode(target, mode_key, hint_letters=auto)
+    mode_key = "hard_0" if is_hard else "normal_0"
+    return play_mode(target, mode_key)

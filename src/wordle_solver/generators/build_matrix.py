@@ -14,10 +14,9 @@ from __future__ import annotations
 import numpy as np
 import pandas as pd
 
-from wordle_solver.utils import resource_path
+from wordle_solver.utils import data_path, resource_path
 
-_POW3 = np.array([3**i for i in range(5)], dtype=np.int16)
-OUT = "wordle_full_matrix.npy"
+OUT = data_path("wordle_full_matrix.npy")
 
 
 def _row(guess_word: str, secrets: np.ndarray) -> np.ndarray:
@@ -44,9 +43,12 @@ def _row(guess_word: str, secrets: np.ndarray) -> np.ndarray:
     return pat.sum(axis=1).astype(np.int16)
 
 
+_POW3 = np.array([3**i for i in range(5)], dtype=np.int16)
+
+
 def build() -> None:
-    words = pd.read_csv(resource_path("scientific_word_data.csv"))["word"].tolist()
-    sols = pd.read_csv(resource_path("valid_solutions.csv"))["word"].tolist()
+    words = pd.read_csv(data_path("scientific_word_data.csv"))["word"].tolist()
+    sols = pd.read_csv(data_path("valid_solutions.csv"))["word"].tolist()
     w2i = {w: i for i, w in enumerate(words)}
     sol_idx = [w2i[w] for w in sols]
     n = len(sols)

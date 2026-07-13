@@ -1,9 +1,10 @@
 from wordfreq import zipf_frequency  # zipf_frequency gives a nice 0-8 scale
 import pandas as pd
+from wordle_solver.utils import data_path
 
-# 1. Load the universe from Kaggle files
-solutions = pd.read_csv("valid_solutions.csv")["word"].tolist()
-guesses = pd.read_csv("valid_guesses.csv")["word"].tolist()
+# 1. Load the universe from Kaggle files (now bundled under data/).
+solutions = pd.read_csv(data_path("valid_solutions.csv"))["word"].tolist()
+guesses = pd.read_csv(data_path("valid_guesses.csv"))["word"].tolist()
 all_words = list(set(solutions + guesses))
 
 # 2. Get Real World Zipf Scores
@@ -24,4 +25,4 @@ df["probability"] = df["weight"] / df["weight"].sum()
 
 # 4. Sort and Save
 df = df.sort_values(by="probability", ascending=False)
-df.to_csv("scientific_word_data.csv", index=False)
+df.to_csv(data_path("scientific_word_data.csv"), index=False)

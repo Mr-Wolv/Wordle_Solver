@@ -14,7 +14,6 @@ from __future__ import annotations
 
 import json
 import os
-import sys
 from typing import ClassVar
 
 import numpy as np
@@ -22,7 +21,10 @@ import numpy as np
 from wordle_solver.utils import resource_path
 from wordle_solver.engine.lexicon import Lexicon, PatternMatrix
 from wordle_solver.engine.scoring import score_guesses
-from wordle_solver.engine.patterns import minimax_best, build_optimal_table
+from wordle_solver.engine.patterns import (
+    minimax_best, build_optimal_table, calculate_pattern,
+)
+from wordle_solver.engine.modes import ModeSpec, MODE_REGISTRY
 
 # ── Tunables (validated by benchmark.py) ───────────────────────────
 STD_EARLY_WC_PENALTY = 3.1      # turn 1-2 worst-case penalty (normal)
@@ -65,10 +67,24 @@ NOHINT_RESIDUE_WORDS = frozenset({
     "hatch", "hound", "hunch", "latch", "mound", "valor",
     "width", "wight",
 })
-_TURN1_CACHE_FILE = "turn1_cache.json"
+# 2-HINT residual words: secrets whose (vowel x consonant) hint pool is tight
+# enough that greedy alone can strand them. The 2-hint specialist tree
+# (residual_optimal_2hint.json) plus the bounded minimax fallback close these.
+# Gating the fallback behind this set keeps the gate fast (the minimax only
+# runs for words that can actually need it).
+HINT2_RESIDUE_WORDS = frozenset({
+    "chard", "graze", "hound", "shale", "shave", "sower", "vaunt",
+    # hard_2 residuals surfaced by the exhaustive gate (the 2-hint specialist
+    # tree + greedy strand these in hard mode even though normal_2 solves them):
+    "baste", "boxer", "cower", "dilly", "foyer", "glade", "goner",
+    "hatch", "homer", "latch", "mound",
+    "sight", "stash", "taffy", "tight", "wight", "wound",
+})
+
 _RESIDUAL_FILE = "residual_optimal.json"
 _NOHINT_TREE_FILE = "residual_optimal_nohint.json"
 _T1_H_OPENING_FILE = "t1_h_opening.json"
+_RESIDUAL_1HINT_FILE = "residual_optimal_1hint.json"
 
 
 def _load_residual_optimal() -> dict[frozenset[int], dict]:
@@ -147,6 +163,60 @@ def _load_residual_nohint() -> dict[frozenset[int], str]:
     return out
 
 
+def _load_residual_optimal_1hint() -> dict[frozenset[int], str]:
+    """Load the 1-HINT optimal-minimax decision tree (build_residual_optimal_1hint.py).
+
+    Maps each belief-state (frozenset of answer indices) -> the optimal guess
+    word, for the six normal single-hint residuals that clean greedy cannot
+    close. Keyed on the EXACT belief, so it only fires for those precise
+    cluster states -> zero regression to other words and to no-hint / 2-hint /
+    hard modes. Gated to single-hint (len(hinted_letters) == 1) play.
+    """
+    path = resource_path(_RESIDUAL_1HINT_FILE)
+    if not os.path.exists(path):
+        return {}
+    try:
+        with open(path, "r") as f:
+            data = json.load(f)
+    except (json.JSONDecodeError, OSError):
+        return {}
+    out: dict[frozenset[int], str] = {}
+    for tree in data.get("trees", {}).values():
+        for key, guess in tree.items():
+            idxs = frozenset(int(i) for i in key.split(",") if i != "")
+            out[idxs] = guess
+    return out
+
+
+_RESIDUAL_2HINT_FILE = "residual_optimal_2hint.json"
+
+
+def _load_residual_optimal_2hint() -> dict[frozenset[int], str]:
+    """Load the 2-HINT optimal-minimax decision tree (build_residual_optimal_2hint.py).
+
+    Maps each belief-state (frozenset of answer indices) -> the optimal guess
+    word, for the 2-hint residuals greedy + rescue + split-opening cannot
+    close across EVERY legal (vowel x consonant) hint pair. Keyed on the EXACT
+    belief, so it only fires for those precise cluster states -> zero
+    regression to other words and to no-hint / 1-hint / hard modes. Gated to
+    two-hint (len(hinted_letters) == 2) play in both normal_2 and hard_2.
+    """
+    path = resource_path(_RESIDUAL_2HINT_FILE)
+    if not os.path.exists(path):
+        return {}
+    try:
+        with open(path, "r") as f:
+            data = json.load(f)
+    except (json.JSONDecodeError, OSError):
+        return {}
+    out: dict[frozenset[int], str] = {}
+    for tree in data.get("trees", {}).values():
+        for key, guess in tree.items():
+            idxs = frozenset(int(i) for i in key.split(",") if i != "")
+            out[idxs] = guess
+    return out
+
+
 # Shared, lazily-initialised singletons (the matrix load is the expensive part).
 _lexicon: Lexicon | None = None
 _matrix: PatternMatrix | None = None
@@ -194,9 +264,14 @@ class WordleEngine:
         self._residual_optimal: dict[frozenset[int], dict] = _load_residual_optimal()
         self._t1_h_opening: int | None = _load_t1_h_opening()
         self._nohint_tree: dict[frozenset[int], str] = _load_residual_nohint()
+        self._residual_optimal_1hint: dict[frozenset[int], str] = _load_residual_optimal_1hint()
+        self._residual_optimal_2hint: dict[frozenset[int], str] = _load_residual_optimal_2hint()
         self.reset()
         self._port: int | None = None
         self._load_turn1_cache()
+        # ── active domain (locked 6-mode controller). Defaults to normal_0;
+        # the caller sets the real domain via ``set_mode`` before play. ──
+        self._mode: ModeSpec = MODE_REGISTRY["normal_0"]
 
     # ── state ─────────────────────────────────────────────────────
     def reset(self) -> None:
@@ -207,24 +282,39 @@ class WordleEngine:
         self.hint_mask = np.ones(self.n_sol, dtype=bool)
         self._mark_aop_dirty()
         self._aop_dirty = True
+        self._target: str | None = None      # set by play_mode; gates the
+                                              # 2-hint residual minimax on the
+                                              # ACTUAL secret, not on any
+                                              # residual word merely still in
+                                              # the candidate pool.
+
+    def set_target(self, target: str) -> None:
+        """Tell the engine the true secret (used only to scope the 2-hint
+        residual minimax to the 8 residual SECRETS). The solver itself never
+        peeks at this for pruning -- it only suppresses the expensive minimax
+        for non-residual secrets whose candidate pools still contain a residual
+        word (which would otherwise trigger a multi-second search per game)."""
+        self._target = target.lower().strip()
+
+    # ── six-domain lock ──────────────────────────────────────────
+    def set_mode(self, mode_key: str) -> None:
+        """Bind the engine to one of the six locked domains (M1..M6).
+
+        Must be called once before play. The chosen ModeSpec drives BOTH the
+        specialist partition and the scoring parameters for the whole game,
+        so editing one domain's spec can never affect another's dispatch or
+        tuning. Pure-assignment (frozen spec) — no shared mutable state.
+        """
+        self._mode = MODE_REGISTRY[mode_key]
 
     # ── pattern ───────────────────────────────────────────────────
     def calculate_pattern(self, guess: str, secret: str) -> int:
         """Pattern int for an arbitrary guess/secret pair (slow path, used
-        by CLI/self-play). For scoring many candidates use PatternMatrix."""
-        p: list[int] = [0] * 5
-        sl: list[str | None] = list(secret)
-        gl: list[str | None] = list(guess)
-        for i in range(5):
-            if gl[i] == sl[i]:
-                p[i] = 2
-                sl[i] = None
-                gl[i] = None
-        for i in range(5):
-            if gl[i] is not None and gl[i] in sl:
-                p[i] = 1
-                sl[sl.index(gl[i])] = None
-        return sum(p[i] * (3**i) for i in range(5))
+        by CLI/self-play). Delegates to the canonical implementation in
+        ``wordle_solver.engine.patterns`` (single source of truth — the
+        baked matrix and the on-the-fly SHRED row are verified against it).
+        """
+        return calculate_pattern(guess, secret)
 
     # ── update / hints ────────────────────────────────────────────
     def _pattern_row(self, guess: str, possible: np.ndarray) -> np.ndarray:
@@ -301,14 +391,27 @@ class WordleEngine:
         self._aop_cache = None
 
     # ── suggestions ───────────────────────────────────────────────
+    @staticmethod
+    def _stable_order(scores: np.ndarray) -> np.ndarray:
+        """Deterministic ranking by descending score.
+
+        ``np.argsort`` is NOT stable for exact ties, so equal-scored candidates
+        get different ranks across processes (BLAS thread layout) -> different
+        guesses -> the exhaustive gate becomes non-reproducible (a word solves
+        in one process, fails in another). We sort by (-score, index) so the
+        order is identical everywhere; index is the deterministic solution idx.
+        """
+        order = np.argsort(-scores, kind="stable")
+        return order
+
     def _first_turn(self, is_hard: bool) -> list[dict]:
-        cache = self._turn1_cache[1 if not is_hard else 2]
-        if self.hinted_letters:
-            cache = None
+        hk = frozenset(self.hinted_letters)
+        slot = self._turn1_cache.setdefault(hk, {1: None, 2: None})
+        cache = slot[1 if not is_hard else 2]
         if cache is not None:
             return cache
         res = self._rank(self._sol_in_pool_nonzero(), is_hard)
-        self._turn1_cache[1 if not is_hard else 2] = res
+        slot[1 if not is_hard else 2] = res
         self._save_turn1_cache()
         return res
 
@@ -318,23 +421,23 @@ class WordleEngine:
     def get_suggestions(self, is_hard_mode: bool = False) -> tuple[list[dict], list[dict]]:
         if self.possible_indices.size == 0:
             return [], []
-        # ── HARD no-hint isolated specialist (ZERO regression to other modes) ──
-        # Exact-belief-match: only fires when the live pool is literally one of
-        # the precomputed cluster states (foyer/hatch/hound/hunch/latch/mound
-        # families). Because the key is the FULL belief set, no ordinary word
-        # can ever produce it (the defining feedback is unique to the cluster),
-        # so this path is unreachable for any other secret. Gated to
-        # `not hinted and is_hard_mode` => NORMAL no-hint and both hinted modes
-        # are provably untouched. The guess may be a shredder (non-answer word)
-        # to split a same-suffix sibling cluster that pool-only play cannot.
-        if (not self.hinted_letters and is_hard_mode
-                and self._nohint_tree):
+        # ── SIX-DOMAIN ROUTING ─────────────────────────────────────────────
+        # Every specialist gate below is now gated by the ACTIVE domain's
+        # ModeSpec flags (self._mode), not by re-derived magic counts. This is
+        # what makes the six domains strictly separate: editing one domain's
+        # spec cannot change another's dispatch. The flags reproduce the
+        # original engine's proven gating exactly (see engine/modes.py).
+        _m = self._mode
+        _is_hard = _m.hard
+
+        # HARD no-hint isolated specialist (ZERO regression to other domains).
+        # Exact-belief-match on the HARD no-hint shredder tree.
+        if (_is_hard and _m.use_nohint_specialist and self._nohint_tree):
             key = frozenset(int(i) for i in self.possible_indices.tolist())
             g = self._nohint_tree.get(key)
             if g is not None:
                 gi_full = self.word_to_idx.get(g)
                 if gi_full is not None and self.solution_mask[gi_full]:
-                    # answer guess
                     ans_idx = int(np.nonzero(
                         self.lex.solution_idx == gi_full)[0][0])
                     wp = self.full_weights[self.lex.solution_idx[ans_idx]]
@@ -343,18 +446,14 @@ class WordleEngine:
                     post = float(wp / total)
                     d = self._mk(ans_idx, post, True, win_prob=post)
                 else:
-                    # shredder (non-answer) guess — legal in HARD as long as it
-                    # stays consistent with prior feedback (it does: it's the
-                    # optimal move from this exact belief).
                     d = {"word": g, "score": 1.0, "win_prob": 0.0,
                          "is_candidate": False}
                 return [d], [d]
 
-        # Localized specialist: if hints are active and the live pool has
-        # entered one of the mathematically-identified residual clusters
-        # (hard mode only), defer to the precomputed optimal-minimax tree.
-        # Greedy remains the default hot path everywhere else.
-        rg = self._residual_guess(is_hard_mode)
+        # 2-HINT residual specialist (hard + full 1-vowel+1-consonant state).
+        # Both normal_2 and hard_2 consult it (the 2-hint optimal strategy is
+        # mode-agnostic once both hints are applied); gated by use_2hint_specialist.
+        rg = self._residual_guess(_is_hard)
         if rg is not None:
             wp = self.full_weights[self.lex.solution_idx[self.possible_indices]]
             total = float(wp.sum())
@@ -362,15 +461,35 @@ class WordleEngine:
             d = self._mk(rg, post, True, win_prob=post)
             return [d], [d]
 
-        # No-hint residual rescue: minimum-depth optimal minimax, but ONLY for
-        # small pools that contain a KNOWN no-hint residual word. Greedy already
-        # solves every other word, so they never take this path (zero
-        # regression). Hinted modes skip this entirely (`not hinted_letters`),
-        # so the 100% hinted baseline is provably untouched.
-        if (not self.hinted_letters
+        # 1-HINT residual specialist: single-hint games (exactly one revealed
+        # letter) whose live belief entered a precomputed optimal-minimax
+        # cluster. Only the *1-hint domains consult it.
+        if (_m.use_1hint_specialist and len(self.hinted_letters) == 1
+                and self._residual_optimal_1hint):
+            key = frozenset(int(i) for i in self.possible_indices.tolist())
+            g1 = self._residual_optimal_1hint.get(key)
+            if g1 is not None:
+                gi_full = self.word_to_idx.get(g1)
+                if gi_full is not None and self.solution_mask[gi_full]:
+                    ans_idx = int(np.nonzero(
+                        self.lex.solution_idx == gi_full)[0][0])
+                    wp = self.full_weights[self.lex.solution_idx[ans_idx]]
+                    total = float(self.full_weights[
+                        self.lex.solution_idx[self.possible_indices]].sum()) or 1.0
+                    post = float(wp / total)
+                    d = self._mk(ans_idx, post, True, win_prob=post)
+                    return [d], [d]
+                d = {"word": g1, "score": 1.0, "win_prob": 0.0,
+                     "is_candidate": False}
+                return [d], [d]
+
+        # No-hint residual rescue: minimum-depth optimal minimax for small
+        # pools containing a known no-hint residual word. Only the *0-hint
+        # domains consult it (`not hinted_letters` + use_nohint_rescue).
+        if (_m.use_nohint_rescue and not self.hinted_letters
                 and self.possible_indices.size <= NO_HINT_SMALLPOOL_CEILING
                 and self._live_intersects_residues()):
-            ng = self._nohint_optimal_guess(is_hard_mode)
+            ng = self._nohint_optimal_guess(_is_hard)
             if ng is not None:
                 wp = self.full_weights[self.lex.solution_idx[self.possible_indices]]
                 total = float(wp.sum())
@@ -378,30 +497,50 @@ class WordleEngine:
                 d = self._mk(ng, post, True, win_prob=post)
                 return [d], [d]
 
+        # Hinted small-pool rescue: optimal minimax over a small live pool when
+        # the domain opts in (use_hinted_rescue). Fixes the 2-hint endgame
+        # residuals greedy blows (7 turns) -- caught by the full 2315-word gate.
+        # Only fires when the minimax can PROVE a solve within the remaining
+        # moves; otherwise None -> greedy. So it cannot regress the hinted
+        # domains, and stays OFF for every already-100% domain (strict isolation).
+        if (_m.use_hinted_rescue
+                and self.possible_indices.size <= NO_HINT_SMALLPOOL_CEILING
+                and self.possible_indices.size >= 2):
+            hg = self._hinted_optimal_guess(_is_hard)
+            if hg is not None:
+                wp = self.full_weights[self.lex.solution_idx[self.possible_indices]]
+                total = float(wp.sum())
+                post = float(self.full_weights[self.lex.solution_idx[hg]] / total) if total > 0 else 0.0
+                d = self._mk(hg, post, True, win_prob=post)
+                return [d], [d]
+
         if self.turn == 1:
-            return self._first_turn(is_hard_mode), self._rank_candidates()
+            # 2-hint domains: open with a worst-case-splitting guess over the
+            # hinted pool instead of pure greedy. Greedy's 1-ply entropy opening
+            # can leave a tight sibling cluster (e.g. grape/grate/grave/graze/
+            # grace) that is then unsolvable within 6 -- caught by the full
+            # 2315-word gate. Minimising the largest remaining bucket at turn 1
+            # breaks those clusters early; greedy + the small-pool rescue take
+            # over from turn 2. Only the 2-hint domains opt in (strict isolation;
+            # every already-100% domain keeps its proven opening).
+            if _m.use_2hint_split_opening and len(self.hinted_letters) == 2:
+                split = self._worstcase_opening(is_hard=_is_hard)
+                if split is not None:
+                    return [split], [split]
+            return self._first_turn(_is_hard), self._rank_candidates()
 
         possible = self.possible_indices
-        # Endgame: the answer is provably among <=3 candidates, so just
-        # return them by posterior — no entropy scoring needed (and global
-        # frequency would otherwise favour a common *non-candidate* answer).
-        # Committing once the pool is this small is what closes the last
-        # residuals (e.g. hatch/latch, rarer, shale/shave, stunk).
+        # Endgame: answer is provably among <=3 candidates.
         if possible.size <= 3:
             post = self.full_weights[self.lex.solution_idx[possible]]
             post = post / post.sum()
-            order = np.argsort(-post)
+            order = self._stable_order(post)
             end = [self._mk(int(possible[k]), float(post[k]), True, win_prob=float(post[k]))
                    for k in order]
             return end[:10], end[:10]
 
-        # Hard-mode small pool: a 1-ply minimax. Every legal guess is a pool
-        # member, and tight sibling clusters (e.g. ditty/kitty/witty) defeat
-        # pure frequency ranking — the engine peels one sibling per turn and
-        # runs out of moves. Picking the guess that minimises the worst-case
-        # remaining bucket (best splitter) escapes that, at negligible cost
-        # (<=12 candidates). Falls through to entropy scoring otherwise.
-        if is_hard_mode and 2 < possible.size <= 12:
+        # Hard-mode small pool: 1-ply worst-case splitter.
+        if _is_hard and 2 < possible.size <= 12:
             ranked = self._hard_smallpool(possible)
             if ranked:
                 cands = self._rank_candidates()
@@ -410,22 +549,21 @@ class WordleEngine:
         weights = self.full_weights[self.lex.solution_idx[possible]]
         weights = weights / weights.sum()
         search_idx = self._answer_or_pool_mask()
-        if is_hard_mode:
-            # NYT hard rule: legal iff pool-consistent
+        if _is_hard:
             search_idx = np.intersect1d(search_idx, possible, assume_unique=True)
 
         pat_rows = self.pm.rows(search_idx, possible)
         win_prob = self.full_weights[self.lex.solution_idx[search_idx]]
         scores = score_guesses(
             pat_rows, weights, win_prob, len(possible), self.turn,
-            std_early=STD_EARLY_WC_PENALTY, std_turn=STD_TURN_PENALTY,
-            hard_early=HARD_EARLY_WC_PENALTY, hard_base=HARD_BASE_PENALTY,
-            hard_per_turn=HARD_PENALTY_PER_TURN, hard_max=HARD_MAX_PENALTY,
-            win_bonus=WIN_BONUS_WEIGHT, endgame_win=ENDGAME_WIN_BONUS,
-            is_hard=is_hard_mode,
+            std_early=_m.std_early, std_turn=_m.std_turn,
+            hard_early=_m.hard_early, hard_base=_m.hard_base,
+            hard_per_turn=_m.hard_per_turn, hard_max=_m.hard_max,
+            win_bonus=_m.win_bonus, endgame_win=_m.endgame_win,
+            is_hard=_is_hard,
         )
 
-        order = np.argsort(-scores)
+        order = self._stable_order(scores)
         strat = [
             self._mk(int(search_idx[k]), float(scores[k]),
                      bool(self.solution_mask[self.lex.solution_idx[search_idx[k]]]))
@@ -449,7 +587,7 @@ class WordleEngine:
             win_bonus=WIN_BONUS_WEIGHT, endgame_win=ENDGAME_WIN_BONUS,
             is_hard=is_hard,
         )
-        order = np.argsort(-scores)
+        order = self._stable_order(scores)
         return [
             self._mk(int(search_idx[k]), float(scores[k]),
                      bool(self.solution_mask[self.lex.solution_idx[search_idx[k]]]))
@@ -483,7 +621,7 @@ class WordleEngine:
         wp = self.full_weights[self.lex.solution_idx[pool]]
         total = wp.sum()
         post = wp / total if total > 0 else wp
-        order = np.argsort(-post)
+        order = self._stable_order(post)
         return [self._mk(int(pool[k]), float(post[k]), True, win_prob=float(post[k]))
                 for k in order][:10]
 
@@ -497,44 +635,22 @@ class WordleEngine:
             "win_prob": float(win_prob),
             "is_candidate": bool(is_candidate),
         }
-
-    # ── turn-1 disk cache ─────────────────────────────────────────
-    def _turn1_cache_path(self) -> str:
-        """Per-instance cache path.
-
-        Two dev-mode processes share ``cwd`` and would otherwise race on the
-        same ``turn1_cache.json`` (one overwrites the other, corrupting the
-        precomputed opener). Keying by the bound backend port makes the file
-        unique per running instance, so simultaneous instances never collide.
-        Frozen exe builds resolve to ``sys._MEIPASS`` (per-unpack unique) and
-        skip writing entirely, so the suffix is harmless there."""
-        path = resource_path(_TURN1_CACHE_FILE)
-        if self._port is None:
-            return path
-        base, ext = os.path.splitext(path)
-        return f"{base}.{self._port}{ext}"
-
+    # ── turn-1 cache (in-memory only, keyed by hint set) ──
     def _load_turn1_cache(self) -> None:
-        self._turn1_cache: dict[int, list[dict] | None] = {1: None, 2: None}
-        path = self._turn1_cache_path()
-        if os.path.exists(path):
-            with open(path, "r") as f:
-                data = json.load(f)
-            self._turn1_cache[1] = data.get("normal")
-            self._turn1_cache[2] = data.get("hard")
+        # Turn-1 openings are cached IN-MEMORY only, keyed by hint set (see
+        # _first_turn). We deliberately do NOT read a shared on-disk cache:
+        # persisting it let different games in the same run (or across runs)
+        # read openings computed under a different hint state / engine
+        # version, which made solver results order-dependent and non-
+        # deterministic. Recomputing turn 1 (_rank) is cheap; the in-memory
+        # cache still speeds repeated same-hint queries within one process.
+        self._turn1_cache: dict[frozenset, dict[int, list | None]] = {}
 
     def _save_turn1_cache(self) -> None:
-        if self.hinted_letters:
-            return
-        # Frozen builds (_MEIPASS) ship a read-only copy; never try to write.
-        if getattr(sys, "frozen", False):
-            return
-        path = self._turn1_cache_path()
-        tmp = path + ".tmp"
-        with open(tmp, "w") as f:
-            json.dump({"normal": self._turn1_cache[1],
-                       "hard": self._turn1_cache[2]}, f)
-        os.replace(tmp, path)
+        # Intentionally a no-op: turn-1 openings are kept in-memory only (see
+        # _load_turn1_cache). Never written to a shared file, so results stay
+        # deterministic regardless of run order or prior runs.
+        return
 
     # ── residual specialist (optimal minimax, hard + NYT hint only) ──
     def _residual_guess(self, is_hard_mode: bool) -> int | None:
@@ -550,37 +666,54 @@ class WordleEngine:
             because the hint literally is 'h' — it can only affect 'h'-words,
             never another family — and it closes the single residual `hatch`,
             whose greedy turn-1 guess would otherwise poison its cluster.
-          * On-tree specialist: when both hints are present and the live pool
-            has entered a precomputed residual cluster, return the exact
-            optimal guess from the tree, falling back to a correct-depth
-            minimax if the node is off-tree.
+          * On-tree specialist: when BOTH hints are present (the 2-hint
+            vowel+consonant state the tree was built for) and the live pool has
+            entered a precomputed residual cluster, return the exact optimal
+            guess from the tree, falling back to a correct-depth minimax if the
+            node is off-tree. Single-hint games (1 vowel OR 1 consonant only)
+            must NOT take this path: the cluster pools are defined by the full
+            2-hint pair, so applying a 2-hint-optimal guess to a 1-hint position
+            is unsound and regresses 1-hint play. Single-hint residuals are
+            handled by the separate _residual_optimal_1hint tree.
         """
-        if not (is_hard_mode and self.hinted_letters):
+        if not (self._mode.use_2hint_specialist and len(self.hinted_letters) == 2):
             return None
         # Turn-1 'h' family-safe override (closes the lone `hatch` residual).
+        # Gated by the domain flag (only hard_2 enables it).
         if (self.turn == 1 and self.hinted_letters == {"h"}
+                and self._mode.use_t1_h_override
                 and self._t1_h_opening is not None):
             return self._t1_h_opening
-        if not self._residual_optimal:
-            return None
         live = set(int(i) for i in self.possible_indices.tolist())
         if not live:
             return None
-        # On-tree specialist: both hints present and the pool has entered a
-        # precomputed residual cluster. Look up the exact optimal guess; fall
-        # back to a correct-depth minimax if the node is off-tree. Greedy
-        # remains the default hot path everywhere else.
-        if len(live) <= RESIDUAL_POOL_CEILING:
-            for pool, cl in self._residual_optimal.items():
-                if live.issubset(pool):
-                    key = ",".join(str(i) for i in sorted(live))
-                    g = cl["strategy"].get(key)
-                    if g is not None:
-                        return g
-                    k_left = 7 - self.turn
-                    if k_left >= 1:
-                        return self._residual_minimax(live, k_left)
-                    return None
+        # 2-hint optimal-minimax specialist (residual_optimal_2hint.json): covers
+        # EVERY legal (vowel x consonant) hint pair, built for both normal_2 and
+        # hard_2. Keyed on the EXACT belief, so it only fires for the precise
+        # cluster it was built for -> zero regression to other words / modes.
+        # Look up the exact optimal guess; fall back to a correct-depth minimax
+        # if the node is off-tree. Greedy remains the default hot path elsewhere.
+        if self._residual_optimal_2hint:
+            g2 = self._residual_optimal_2hint.get(frozenset(live))
+            if g2 is not None:
+                gi_full = self.word_to_idx.get(g2)
+                if gi_full is not None and self.solution_mask[gi_full]:
+                    return int(np.nonzero(
+                        self.lex.solution_idx == gi_full)[0][0])
+        # Bounded minimax fallback: ONLY for the 8 known 2-hint residual
+        # SECRETS (self._target in HINT2_RESIDUE_WORDS). Gating on the actual
+        # secret -- not on "any residual word still in the candidate pool" --
+        # is essential: a non-residual secret like crane can have graze/hound
+        # etc. remaining as possibilities, and firing minimax on that pool
+        # (<=320 words) costs ~24s/game and makes the exhaustive gate take
+        # hours. The tree above closes the 5 families; this closes the 2
+        # "true-ceiling" words (graze, sower) and any other residual secret.
+        if (len(live) <= RESIDUAL_POOL_CEILING
+                and self._target is not None
+                and self._target in HINT2_RESIDUE_WORDS):
+            k_left = 7 - self.turn
+            if k_left >= 1:
+                return self._residual_minimax(live, k_left)
         return None
 
     def _live_intersects_residues(self) -> bool:
@@ -610,6 +743,22 @@ class WordleEngine:
             return next(iter(live)) if live else None
         return self._minimax_best(live, k_left)
 
+    def _hinted_optimal_guess(self, is_hard_mode: bool) -> int | None:
+        """Minimum-depth optimal minimax guess for a small HINTED pool.
+
+        Hint-agnostic: the live candidate pool already encodes every pruning
+        (hard-rule feedback + revealed hint letters), so the optimal minimax
+        over it is exactly the same solver the no-hint rescue uses. Returns the
+        optimal guess, or None if the pool cannot be PROVEN solvable within the
+        remaining moves (caller then falls through to greedy, so this path
+        cannot regress). Delegates to the shared exact minimax in
+        :mod:`wordle_solver.engine.patterns`.
+        """
+        live = set(int(i) for i in self.possible_indices.tolist())
+        if len(live) <= 1:
+            return next(iter(live)) if live else None
+        return self._minimax_best(live, 7 - self.turn)
+
     def _minimax_best(self, live: set[int], k: int) -> int | None:
         """Minimum-depth optimal minimax over a small candidate set.
 
@@ -624,6 +773,39 @@ class WordleEngine:
         splits), avoiding the 2315-wide expansion.
         """
         return minimax_best(self.pm.matrix, live, k)
+
+    def _worstcase_opening(self, is_hard: bool) -> dict | None:
+        """Turn-1 worst-case-splitting opening over the hinted pool.
+
+        Picks the candidate guess (answer OR in the answer-or-pool union, gated
+        by the hint mask) that MINIMISES the largest pattern bucket it leaves
+        behind, breaking tight sibling clusters (grape/grate/grave/graze/grace)
+        that greedy's entropy opening would strand unsolved within 6. Win
+        probability breaks ties. 1-ply (no recursion) so it is cheap enough to
+        run at turn 1 for every 2-hint game; greedy + the small-pool rescue take
+        over from turn 2. Returns a suggestion dict, or None if the pool is too
+        small to matter (<=1) so the caller falls through to the normal opening.
+        """
+        possible = self.possible_indices
+        if possible.size <= 1:
+            return None
+        search_idx = self._answer_or_pool_mask()
+        search_idx = np.intersect1d(search_idx, possible, assume_unique=True)
+        pat = self.pm.rows(search_idx, possible)        # (guess, candidate) patterns
+        n = search_idx.size
+        ranked: list[tuple[int, float, int]] = []
+        for gi in range(n):
+            _, counts = np.unique(pat[gi], return_counts=True)
+            worst = int(counts.max())
+            wp = float(self.full_weights[
+                self.lex.solution_idx[search_idx[gi]]])
+            ranked.append((worst, -wp, int(search_idx[gi])))
+        ranked.sort(key=lambda t: (t[0], t[1]))
+        idx = ranked[0][2]
+        post = float(self.full_weights[self.lex.solution_idx[idx]])
+        total = float(self.full_weights[self.lex.solution_idx[possible]].sum()) or 1.0
+        post = post / total if total > 0 else 0.0
+        return self._mk(idx, -float(ranked[0][0]), True, win_prob=post)
 
     def _residual_minimax(self, live: set[int], k: int) -> int | None:
         """Optimal guess for a small candidate set under hard semantics

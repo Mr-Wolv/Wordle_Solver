@@ -8,9 +8,10 @@ import pytest
 import numpy as np
 import pandas as pd
 from wordle_solver.engine import WordleEngine
+from wordle_solver.utils import data_path
 
 # Real NYT answer universe (what the solver actually targets).
-VALID_SOLUTIONS: list[str] = pd.read_csv("valid_solutions.csv").iloc[:, 0].tolist()
+VALID_SOLUTIONS: list[str] = pd.read_csv(data_path("valid_solutions.csv")).iloc[:, 0].tolist()
 
 
 # ── Fixtures ───────────────────────────────────────────────────────
@@ -188,6 +189,7 @@ class TestGetSuggestions:
 
     def test_hard_mode_returns_suggestions(self, engine):
         engine.reset()
+        engine.set_mode("hard_0")  # lock the hard domain
         strat, cands = engine.get_suggestions(is_hard_mode=True)
         assert len(strat) == 10
 
@@ -261,6 +263,7 @@ class TestFullGame:
         random.seed(11)
         for secret in random.sample(VALID_SOLUTIONS, 40):
             engine.reset()
+            engine.set_mode("hard_0")  # lock the hard domain
             for turn in range(1, 7):
                 strat, _ = engine.get_suggestions(is_hard_mode=True)
                 assert strat, f"No suggestions for '{secret}' on turn {turn}"
@@ -326,6 +329,7 @@ class TestHardModeMidGame:
         random.seed(3)
         for secret in random.sample(VALID_SOLUTIONS, 25):
             engine.reset()
+            engine.set_mode("hard_0")  # lock the hard domain
             for turn in range(1, 7):
                 strat, _ = engine.get_suggestions(is_hard_mode=True)
                 assert strat, f"No suggestions for '{secret}' turn {turn}"
@@ -353,6 +357,7 @@ class TestHardModeSmallPool:
         member that minimises the largest pattern group it leaves behind.
         """
         engine.reset()
+        engine.set_mode("hard_0")  # lock the hard domain
         # A real tight 7-word sibling cluster (hatch/latch are genuine
         # hard-mode failures the audit surfaced).
         cluster = ["batch", "catch", "hatch", "latch", "match", "patch", "watch"]
