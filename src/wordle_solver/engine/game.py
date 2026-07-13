@@ -86,6 +86,54 @@ def _validate_hint_letters(word: str, hint_letters: Iterable[str] | None) -> lis
     return out
 
 
+def _play_core(
+    target: str,
+    mode_key: str,
+    hint_letters: Iterable[str] | None = None,
+    *,
+    trace: bool = False,
+) -> tuple[str, int, list[str]]:
+    """Shared single-game loop for both ``play_mode`` and ``play_mode_trace``.
+
+    Returns ``(word, turns, guesses)`` where ``guesses`` is the ordered list of
+    guessed words (empty list when ``trace`` is False). Centralising the loop
+    here means the trace path and the production path cannot drift.
+    """
+    spec = MODE_REGISTRY[mode_key]
+    target = target.lower().strip()
+    hints = _validate_hint_letters(target, hint_letters)
+    if spec.hint_budget == 0 and hints:
+        raise ValueError(f"mode {mode_key} takes no hints but hints={hints}")
+    if spec.hint_budget == 1 and len(hints) != 1:
+        raise ValueError(f"mode {mode_key} needs exactly 1 hint, got {hints}")
+    if spec.hint_budget == 2 and len(hints) != 2:
+        raise ValueError(f"mode {mode_key} needs exactly 2 hints, got {hints}")
+
+    engine = _get_engine()          # reuse the process-local engine
+    engine.reset()                   # clean slate -> no state leakage
+    engine.set_mode(mode_key)        # lock the domain for the whole game
+    engine.set_target(target)        # scope the 2-hint residual minimax
+    for h in hints:
+        engine.add_hint(h)
+
+    turns = 0
+    guesses: list[str] = [] if trace else []
+    while True:
+        turns += 1
+        strat, _ = engine.get_suggestions(is_hard_mode=spec.hard)
+        if not strat:
+            return (target, -1, guesses)
+        guess = strat[0]["word"]
+        if trace:
+            guesses.append(guess)
+        if guess == target:
+            return (target, turns, guesses)
+        pattern = engine.calculate_pattern(guess, target)
+        engine.update_state(guess, pattern)
+        if turns >= 6:
+            return (target, 7, guesses)
+
+
 def play_mode(
     target: str,
     mode_key: str,
@@ -106,36 +154,20 @@ def play_mode(
         (word, 1..6) -- solved in that many turns (win)
         (word, 7)    -- exhausted the 6 guesses without solving (loss)
     """
-    spec = MODE_REGISTRY[mode_key]
-    target = target.lower().strip()
-    hints = _validate_hint_letters(target, hint_letters)
-    if spec.hint_budget == 0 and hints:
-        raise ValueError(f"mode {mode_key} takes no hints but hints={hints}")
-    if spec.hint_budget == 1 and len(hints) != 1:
-        raise ValueError(f"mode {mode_key} needs exactly 1 hint, got {hints}")
-    if spec.hint_budget == 2 and len(hints) != 2:
-        raise ValueError(f"mode {mode_key} needs exactly 2 hints, got {hints}")
+    word, turns, _ = _play_core(target, mode_key, hint_letters)
+    return (word, turns)
 
-    engine = _get_engine()          # reuse the process-local engine
-    engine.reset()                   # clean slate -> no state leakage
-    engine.set_mode(mode_key)        # lock the domain for the whole game
-    engine.set_target(target)        # scope the 2-hint residual minimax
-    for h in hints:
-        engine.add_hint(h)
 
-    turns = 0
-    while True:
-        turns += 1
-        strat, _ = engine.get_suggestions(is_hard_mode=spec.hard)
-        if not strat:
-            return (target, -1)
-        guess = strat[0]["word"]
-        if guess == target:
-            return (target, turns)
-        pattern = engine.calculate_pattern(guess, target)
-        engine.update_state(guess, pattern)
-        if turns >= 6:
-            return (target, 7)
+def play_mode_trace(
+    target: str,
+    mode_key: str,
+    hint_letters: Iterable[str] | None = None,
+) -> tuple[str, int, list[str]]:
+    """Like :func:`play_mode` but also returns the ordered list of guessed
+    words. Used by the exhaustive enumeration report so the human can see the
+    exact solve path for every (word, domain, hint) triple.
+    """
+    return _play_core(target, mode_key, hint_letters, trace=True)
 
 
 def play_one_game(

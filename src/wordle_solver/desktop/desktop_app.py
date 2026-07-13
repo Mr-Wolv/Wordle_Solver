@@ -31,7 +31,6 @@ import urllib.parse
 import urllib.request
 from pathlib import Path
 
-
 def file_uri(path: str) -> str:
     """Correct file:// URI for WebView2 (needs 3 slashes + forward slashes).
 
@@ -74,7 +73,7 @@ def show_fatal(title: str, reason: str, fixes: list[str], detail) -> None:
     fixes_html = "".join(f"<li>{_esc(f)}</li>" for f in fixes)
     detail_text = _esc("".join(traceback.format_exception(type(detail), detail, getattr(detail, "__traceback__", None))) if detail else "—")
     page = f"""<!DOCTYPE html><html lang="en"><head><meta charset="utf-8">
-<meta name="viewport" content="width=device-width,initial-scale=1">
+<meta name="viewport" content="device-width,initial-scale=1">
 <style>
 :root{{--bg:#0b0e14;--panel:#161d2b;--red:#ff5d5d;--subtle:#9aa7bd;--faint:#6b788f}}
 *{{box-sizing:border-box}}

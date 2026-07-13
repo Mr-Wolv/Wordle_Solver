@@ -296,6 +296,23 @@ def test_hint_flow(page):
     assert "KNOWN: E" in page.locator("#hint-status").inner_text()
 
 
+def test_calculating_overlay_clears_after_move(page):
+    # The STRATEGY card shows a "calculating" overlay during the heavy
+    # exact-minimax solve so a multi-second think reads as working, not
+    # frozen. After the move resolves the overlay must clear (never stuck).
+    assert page.locator("#calc-overlay").count() == 1
+    # Initially idle -> no calculating state.
+    assert not page.locator("#card-intel").evaluate(
+        "e => e.classList.contains('calculating')")
+    _type_guess(page, "slate")
+    _set_tile(page, 2, 2)
+    _submit(page)
+    page.wait_for_timeout(300)
+    # Overlay must have cleared after the move settled (busy false in finally).
+    assert not page.locator("#card-intel").evaluate(
+        "e => e.classList.contains('calculating')")
+
+
 def test_intel_lists_populated(page):
     page.wait_for_selector("#solve-list .sugg")
     assert page.locator("#solve-list .sugg").count() >= 5

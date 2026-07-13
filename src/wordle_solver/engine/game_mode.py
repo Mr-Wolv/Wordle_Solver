@@ -145,7 +145,16 @@ class GameMode:
 
     # ── guess submit: advances turn + ends the game at turn 6 ──
     def on_submit(self, solved: bool) -> None:
-        """Call after a guess is accepted. Locks the mode after turn 1."""
+        """Call after a guess is accepted. Locks the mode after turn 1.
+
+        Once the game is already over, this is a no-op: a late/excess submit
+        must NOT retroactively flip ``won`` (e.g. mark a loss as a win) or
+        re-open the game. The web layer refuses post-game submits with a
+        409, but the controller must be self-defensive so any caller — not
+        just the HTTP API — cannot corrupt the end state.
+        """
+        if self._over:
+            return
         self._mode_locked = True
         if solved:
             self._won = True

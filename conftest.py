@@ -7,9 +7,9 @@ on hosts where the browser binary can't be downloaded (e.g. restricted
 networks) without hiding failures when the browser IS present.
 
 The exhaustive closed-loop regression gate (test_game_contract.py::
-test_exhaustive_contract) is marked `exhaustive` and excluded from the
-default run via pytest.ini (addopts = -m "not exhaustive"); run it with
-`pytest -m exhaustive`.
+test_domain_solves_100) is marked `exhaustive` and runs in the default
+`pytest` run (no addopts exclusion in pytest.ini). For a fast smoke test
+without it, use `pytest -m "not exhaustive"`.
 
 We inject ``src/`` onto ``sys.path`` (rootdir-relative) so the
 ``wordle_solver`` package imports in tests without requiring a ``pip install

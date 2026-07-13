@@ -13,19 +13,15 @@ with the exact hint enumerations the request specifies:
                   the word's own letters (the NYT 1-cons+1-vow rule)
     M6 hard·2   : same 2-hint enumeration, hard mode
 
-That is ~50k+ simulated games. The FIRST run computes them and writes a
+that is ~50k+ simulated games. The FIRST run computes them and writes a
 version-stamped cache to disk (keyed by a hash of the engine + data +
 mode logic). EVERY later run reads the cache and verifies the same 100%
 in milliseconds — so the "hours above hours" cost is paid exactly once.
 
-If the engine/data/mode logic changes, the version hash changes, the cache
-is invalidated, and the next run recomputes (and re-proves) from scratch.
-
-Run:
-    python -m pytest tests/test_game_contract.py -q -m exhaustive   # recompute/verify
-    python -m pytest tests/test_game_contract.py -q                  # default: fast subset
-Set WS_GATE_LIMIT=N (e.g. 200) to bound the corpus to the first N words
-for a quick harness/correctness check without the full multi-hour cost.
+The exhaustive gate is part of the DEFAULT `pytest` run (no addopts
+exclusion in pytest.ini — it was removed so `pytest` proves the full
+contract every time). For a fast smoke test, run `pytest -m "not exhaustive"`
+or bound the corpus with WS_GATE_LIMIT=N.
 """
 
 from __future__ import annotations

@@ -1,5 +1,11 @@
 name: Build and Release Standalone EXE
 
+# Triggered by pushing a tag starting with 'v' (e.g. v2.1.0). Builds the
+# one-folder EXE and, crucially, VERIFIES the freshly-built artifact by
+# running the frozen-bundle self-play test (WS_BUILD_TEST=1) against it
+# before the GitHub Release is created. This proves the CI-built app is
+# behaviourally equivalent to the source/locally-built one — not just that
+# it compiles.
 on:
   push:
     tags:
@@ -12,7 +18,9 @@ permissions:
 jobs:
   build:
     runs-on: windows-latest
-
+    env:
+      PYTHONWARNINGS: error
+      WS_BUILD_TEST: "1"
     steps:
     - name: Checkout Code
       uses: actions/checkout@v4
@@ -35,13 +43,7 @@ jobs:
         # the matrix -- derived from it -- is rebuilt here.
         python -m wordle_solver.generators.build_matrix
 
-    - name: Generate Turn-1 Cache (preload)
-      run: |
-        # Precompute both normal and hard mode first-guess results
-        # so the exe starts instantly with zero delay
-        python -c "from wordle_solver.engine import WordleEngine; e=WordleEngine(); e.get_suggestions(); e.get_suggestions(is_hard_mode=True)"
-
-    # residual_optimal.json and t1_h_opening.json are committed artifacts
+    # residual_optimal*.json and t1_h_opening.json are committed artifacts
     # (generated offline by wordle_solver.generators.build_residual_optimal /
     # find_t1_h -- the latter is a multi-hour brute-force prover and must NOT
     # run in CI). They are bundled into the exe via the spec's `datas`, so no
@@ -49,6 +51,14 @@ jobs:
 
     - name: Build one-folder bundle (removes redundant root exe)
       run: python src/wordle_solver/desktop/build_dist.py
+
+    - name: Verify built EXE via frozen-bundle self-play
+      # Builds (if absent) + launches the actual EXE and self-plays the hard
+      # no-hint residuals through its HTTP API. This is the behavioural
+      # equivalence proof the release depends on — it must pass before we
+      # publish the tag.
+      run: |
+        python -m pytest tests/test_frozen_bundle.py -q
 
     # NOTE: intentionally NO artifact upload. The user requires the app to be
     # reproducible from source anywhere, so the build above is the proof of

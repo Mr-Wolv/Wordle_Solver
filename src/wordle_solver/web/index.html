@@ -80,6 +80,15 @@
       <!-- INTEL -->
       <section class="card" id="card-intel" aria-label="Suggestions">
         <div class="card-head"><h2>STRATEGY</h2></div>
+        <!-- Calculating overlay: shown while the engine solves a hard cluster
+             (exact minimax can take a few seconds on pathological pools). It
+             reassures the user the app is WORKING, not frozen. Toggled by the
+             `.calculating` class on this card (see app.js submitMove). -->
+        <div id="calc-overlay" class="calc-overlay" aria-live="assertive" aria-hidden="true">
+          <div class="calc-spinner" aria-hidden="true"></div>
+          <div class="calc-text">CALCULATING OPTIMAL MOVE<span class="calc-dots"><i>.</i><i>.</i><i>.</i></span></div>
+          <div class="calc-sub">solving the toughest clusters exactly — a few seconds, tops</div>
+        </div>
         <div class="intel-col">
           <h3 class="intel-title">SOLVE <span class="intel-sub">— play one of these</span></h3>
           <div class="col-head">

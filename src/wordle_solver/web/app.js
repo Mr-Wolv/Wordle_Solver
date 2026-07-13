@@ -324,6 +324,8 @@ class App {
       return;
     }
     this.busy = true;
+    const intel = this.$("card-intel");
+    if (intel) intel.classList.add("calculating");  // reassure: engine is solving, not frozen
     try {
       const st = await this._post("/api/submit", { guess, colors: this.entryColors.slice() });
       this.history.push({ guess, colors: this.entryColors.slice() });
@@ -338,6 +340,7 @@ class App {
       this.alertErr(err);
     } finally {
       this.busy = false;
+      if (intel) intel.classList.remove("calculating");
     }
   }
 

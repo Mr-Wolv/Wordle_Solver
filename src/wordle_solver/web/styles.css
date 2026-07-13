@@ -491,3 +491,64 @@ html, body {
   margin-bottom: 8px;
 }
 .solve-note.hidden { display: none; }
+
+/* ── Calculating overlay (shown during heavy exact-minimax solves) ──
+   Sits over the STRATEGY card so a multi-second think reads as WORKING,
+   never frozen. Toggled by `.calculating` on #card-intel (app.js). */
+.calc-overlay {
+  position: absolute;
+  inset: 0;
+  z-index: 20;
+  display: none;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 10px;
+  border-radius: var(--radius);
+  background: radial-gradient(120% 120% at 50% 0%,
+              rgba(18,24,38,0.96), rgba(10,13,22,0.985));
+  -webkit-backdrop-filter: blur(3px);
+  backdrop-filter: blur(3px);
+  border: 1px solid rgba(91,157,255,0.35);
+  box-shadow: 0 0 36px rgba(91,157,255,0.18) inset,
+              0 8px 30px rgba(0,0,0,0.45);
+  animation: calc-fade 180ms ease-out;
+}
+#card-intel.calculating .calc-overlay { display: flex; }
+#card-intel.calculating .intel-col { filter: blur(2px); opacity: 0.55; }
+@keyframes calc-fade { from { opacity: 0; } to { opacity: 1; } }
+
+.calc-spinner {
+  width: 42px;
+  height: 42px;
+  border-radius: 50%;
+  border: 3px solid rgba(91,157,255,0.18);
+  border-top-color: var(--accent, #5b9dff);
+  animation: calc-spin 0.85s linear infinite;
+  box-shadow: 0 0 18px rgba(91,157,255,0.35);
+}
+@keyframes calc-spin { to { transform: rotate(360deg); } }
+
+.calc-text {
+  font-size: 13px;
+  font-weight: 800;
+  letter-spacing: 1.5px;
+  color: #eaf1ff;
+  text-transform: uppercase;
+}
+.calc-dots i {
+  display: inline-block;
+  animation: calc-blink 1.2s infinite both;
+}
+.calc-dots i:nth-child(2) { animation-delay: 0.2s; }
+.calc-dots i:nth-child(3) { animation-delay: 0.4s; }
+@keyframes calc-blink { 0%,80%,100% { opacity: 0.15; } 40% { opacity: 1; } }
+
+.calc-sub {
+  font-size: 11px;
+  font-weight: 600;
+  color: #9fb2d4;
+  opacity: 0.85;
+  text-align: center;
+  max-width: 240px;
+}

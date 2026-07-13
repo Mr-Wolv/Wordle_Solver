@@ -98,16 +98,15 @@ def _play(port, engine, secret) -> int | None:
 
 
 # The frozen-bundle test stands up the actual built EXE — a heavy,
-# environment-fragile PyInstaller build (and the EXE needs a native window on
-# a real desktop). It is therefore opt-in via WS_BUILD_TEST=1 (a dedicated CI
-# build job), keeping the default run fast and green. When opted in it builds
-# the bundle if absent and self-plays the hard no-hint residuals through the
-# shipped artifact's HTTP API.
+# environment-fragile PyInstaller build (and the EXE opens a native window
+# on a real desktop). It is therefore opt-in via WS_BUILD_TEST=1 (a dedicated
+# CI build job runs it), keeping the default `pytest` run fast and green and
+# avoiding a window pop on every dev loop. When opted in it builds the bundle
+# if absent and self-plays the hard no-hint residuals through the shipped
+# artifact's HTTP API — it is NOT skipped, merely isolated.
 _BUILD_OPT_IN = os.environ.get("WS_BUILD_TEST") == "1"
 
 
-@pytest.mark.skipif(not _BUILD_OPT_IN,
-                    reason="set WS_BUILD_TEST=1 to run the heavy frozen-bundle build test")
 @pytest.fixture(scope="module")
 def running_exe():
     # Build if absent so the suite is self-sufficient.
@@ -132,6 +131,8 @@ def running_exe():
             proc.kill()
 
 
+@pytest.mark.skipif(not _BUILD_OPT_IN,
+                    reason="set WS_BUILD_TEST=1 to run the heavy frozen-bundle build test")
 def test_frozen_bundle_solves_all_residuals(running_exe):
     from wordle_solver.engine import WordleEngine
 
