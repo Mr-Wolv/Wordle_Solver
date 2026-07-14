@@ -251,7 +251,43 @@ def test_frozen_bundle_solves_all_residuals(running_exe):
 
 @pytest.mark.skipif(not _BUILD_OPT_IN,
                     reason="set WS_BUILD_TEST=1 to run the heavy frozen-bundle build test")
-def test_frozen_bundle_solves_hinted_games(running_exe):
+def test_frozen_bundle_solves_all_30_residuals(running_exe):
+    """Self-play all 30 'proven-residual' seed words (the 628 games stamped in
+    EXHAUSTIVE_ENUMERATION.txt) through the SHIPPED exe in normal_0 and hard_0.
+    The report marks those games from the gate cache; this replays them LIVE
+    through the frozen artifact so the bundled specialist trees are proven
+    present and solving. Duplicates the logic of scripts/prove_residuals_exe.py
+    so the proof is part of `pytest`, not just a standalone script."""
+    from wordle_solver.engine import WordleEngine
+
+    e = WordleEngine()
+    SEEDS = [
+        "baste", "bitty", "boxer", "chard", "cower", "dilly", "ditty", "foyer",
+        "glade", "golly", "goner", "graze", "hatch", "homer", "hound", "hunch",
+        "latch", "mound", "shale", "shave", "sight", "sower", "stash", "taffy",
+        "tight", "valor", "vaunt", "width", "wight", "wound",
+    ]
+    for secret in SEEDS:
+        for hard in (False, True):
+            _api(running_exe, "/api/reset", {})
+            _api(running_exe, "/api/hard", {"on": hard})
+            solved = False
+            for _ in range(1, 7):
+                st = _api(running_exe, "/api/state")
+                if st.get("solved"):
+                    solved = True
+                    break
+                guess = st["strat"][0]["word"]
+                pat = e.calculate_pattern(guess, secret)
+                colors = [(pat // (3 ** i)) % 3 for i in range(5)]
+                res = _api(running_exe, "/api/submit",
+                           {"guess": guess, "colors": colors})
+                if res.get("solved"):
+                    solved = True
+                    break
+            assert solved, (
+                f"exe failed to close residual '{secret}' (hard={hard}) within 6"
+            )
     """Self-play hinted games through the SHIPPED exe so the bundle proves it
     carries the 1-hint AND 2-hint specialist trees. Before these artifacts were
     added to the spec's datas, the loaders silently fell back to {} in the
