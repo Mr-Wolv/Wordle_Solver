@@ -216,6 +216,13 @@ html, body {
 .hard-toggle.locked .hard-lock { display: inline; }
 .hard-toggle.locked input { accent-color: var(--faint); cursor: not-allowed; }
 
+/* hint input + LOG HINT lock mirror the HARD toggle: a visible
+   "✕ locked" badge appears once the domain locks after turn 1. */
+.hint-lock { display: none; color: var(--error); font-weight: 800; letter-spacing: 1px; }
+.hint-block.locked .hint-lock { display: inline; }
+.hint-block.locked .hint-input { opacity: .45; cursor: not-allowed; border-color: rgba(255,93,93,0.3); }
+.hint-block.locked #hint-btn { opacity: .45; cursor: not-allowed; }
+
 /* ── command / how to play ─────────────────────────── */
 .btn {
   height: 46px;
@@ -552,3 +559,59 @@ html, body {
   text-align: center;
   max-width: 240px;
 }
+
+/* ── POOL card: full remaining candidate list ── */
+.pool-count {
+  margin-left: auto;
+  font-size: 11px;
+  font-weight: 800;
+  letter-spacing: 1px;
+  color: var(--accent);
+  background: rgba(91,157,255,0.14);
+  border: 1px solid rgba(91,157,255,0.4);
+  border-radius: 999px;
+  padding: 3px 11px;
+}
+.pool-note {
+  margin: 0;
+  font-size: 11px;
+  line-height: 1.5;
+  color: var(--subtle);
+}
+.pool-note b { color: var(--text); }
+.pool-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(78px, 1fr));
+  gap: 6px;
+  max-height: 320px;
+  overflow-y: auto;
+  padding: 2px;
+}
+.pool-word {
+  font-family: inherit;
+  font-size: 12px;
+  font-weight: 700;
+  letter-spacing: 1px;
+  color: var(--text);
+  background: var(--panel2);
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  padding: 7px 4px;
+  cursor: pointer;
+  transition: transform .12s ease, border-color .15s ease, box-shadow .15s ease, background .15s ease;
+}
+.pool-word:hover {
+  border-color: var(--green);
+  background: rgba(52,210,123,0.12);
+  transform: translateY(-1px);
+  box-shadow: 0 6px 16px -10px rgba(52,210,123,0.7);
+}
+.pool-word:active { transform: translateY(1px) scale(.98); }
+.pool-more {
+  margin-top: 8px;
+  font-size: 11px;
+  font-weight: 700;
+  color: var(--faint);
+  text-align: center;
+}
+.pool-more.hidden { display: none; }

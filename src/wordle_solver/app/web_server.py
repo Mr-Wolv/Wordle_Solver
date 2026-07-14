@@ -100,6 +100,8 @@ def _state() -> dict:
         # populated, ready board so the UI is alive on load.
         engine.set_mode("normal_0")
         strat, cands = engine.get_suggestions(is_hard_mode=False)
+        _idx0 = engine.possible_indices.tolist()
+        _words0 = [engine.lex.solution_words[i] for i in _idx0[:400]]
         return {
             "turn": 1, "pool": int(engine.possible_indices.size),
             "hard": False, "mode": "normal_0", "mode_locked": False,
@@ -107,6 +109,7 @@ def _state() -> dict:
             "hint_label": "OPTIONAL hint: reveal 1 consonant + 1 vowel",
             "hint_remaining": "1 consonant + 1 vowel",
             "strat": strat[:12], "cands": cands[:12],
+            "full_pool": _words0, "pool_total": int(engine.possible_indices.size),
             "specialist": False, "solved": False, "started": False,
         }
     gm = game_mode
@@ -119,6 +122,11 @@ def _state() -> dict:
     pool = int(engine.possible_indices.size)
     specialist = bool(gm.hard and engine.hinted_letters and len(strat) == 1
                       and pool > 1)
+    # Full remaining candidate pool — exposed so the UI can let the human pick
+    # ANY legal answer (the solver recommends; the human decides). Capped at
+    # 400 rendered rows; pool_total carries the true count for "and N more".
+    _idx = engine.possible_indices.tolist()
+    _words = [engine.lex.solution_words[i] for i in _idx[:400]]
     return {
         "turn": gm.turn,  # 1-based: turn 1 = first guess yet to be made
         "pool": pool,
@@ -131,6 +139,8 @@ def _state() -> dict:
         "hint_remaining": _hint_remaining(hinted, gm.hint_budget),
         "strat": strat[:12],
         "cands": cands[:12],
+        "full_pool": _words,
+        "pool_total": pool,
         "specialist": specialist,
         "solved": gm.over and _is_win(),
         "started": True,

@@ -51,24 +51,26 @@
         </label>
 
         <ol class="howto">
-          <li><b>Type your guess.</b> Just press the letter keys — no box to click. The word appears on the board's active row (max 5 letters).</li>
+          <li><b>Type your guess.</b> Just press the letter keys — no box to click. The word appears on the board's active row (max 5 letters). Or click any word in the <b>POOL</b> card to load it.</li>
           <li><b>Fix a tile's color.</b> After you type, click each tile on the active row to cycle it <i class="sw grey"></i> absent → <i class="sw yellow"></i> present → <i class="sw green"></i> correct — matching the colors from your real Wordle.</li>
-          <li><b>Submit.</b> Press <kbd>Enter</kbd> or the on-screen <b>ENTER</b> key. The board's top suggestion is your optimal next word — play it.</li>
+          <li><b>Submit.</b> Press <kbd>Enter</kbd> or the on-screen <b>ENTER</b> key. The board's <b>SOLVE</b> list is your optimal next word — but you're free to play any word from <b>POOL</b>; a different pick may even solve faster.</li>
           <li><b>Delete.</b> Press <kbd>Backspace</kbd> or the on-screen <b>DELETE</b> key to remove the last letter typed.</li>
-          <li><b>NYT hint (optional).</b> Type one consonant + one vowel in the hint box and log them — the solver still closes 100% with no hints, so skip it if you like.</li>
+          <li><b>NYT hint (optional).</b> Type one consonant + one vowel in the hint box and log them. It's an official Wordle mechanic — not required. The solver already closes <b>100%</b> with no hints; hints can shave a turn.</li>
+          <li><b>Mode &amp; lock.</b> Toggle <b>HARD MODE</b> any time before your first guess. Once you submit turn 1, the mode + hints <b>lock</b> (you'll see a "DOMAIN LOCKED" notice) for the rest of the game.</li>
           <li><b>Done?</b> Use <b>SYSTEM RESET</b> for a new puzzle. <b>EXIT APP</b> quits.</li>
         </ol>
 
-        <div class="hint-block">
+        <div class="hint-block" id="hint-block">
           <label class="hint-label" for="hint-letter">NYT HINT LETTER <span class="hint-opt">— optional</span></label>
           <div class="hint-row">
             <input id="hint-letter" class="hint-input" type="text" maxlength="1"
                    autocomplete="off" placeholder="A–Z" />
             <button id="hint-btn" class="btn btn-accent">LOG HINT</button>
+            <span class="hint-lock" id="hint-lock" aria-hidden="true">✕ locked</span>
           </div>
           <div id="hint-status" class="hint-status"></div>
-          <p class="hint-note">The game is fully solvable with no hints. The NYT hint
-            (1 consonant + 1 vowel) is an optional shortcut, not required.</p>
+          <p class="hint-note">Official Wordle mechanic — not required. The solver
+            already closes 100% with no hints; a hint can shave a turn.</p>
         </div>
 
         <div class="cmd-actions">
@@ -93,7 +95,7 @@
           <h3 class="intel-title">SOLVE <span class="intel-sub">— play one of these</span></h3>
           <div class="col-head">
             <span class="col-word">WORD</span>
-            <span class="col-gain" title="GAIN = information value — higher splits the pool better">GAIN ▾</span>
+            <span class="col-gain" title="SCORE = blended info-gain + win-probability (higher = better next guess)">SCORE ▾</span>
           </div>
           <div id="solve-note" class="solve-note hidden"></div>
           <ol id="solve-list" class="sugg-list"></ol>
@@ -106,6 +108,21 @@
           </div>
           <ol id="shred-list" class="sugg-list"></ol>
         </div>
+      </section>
+
+      <!-- POOL: the FULL remaining candidate list. The solver recommends
+           (SOLVE/SHRED); you are free to play ANY word here. Deviating from
+           the optimal suggestion may even solve faster — your call. -->
+      <section class="card" id="card-pool" aria-label="Candidate pool">
+        <div class="card-head">
+          <h2>POOL</h2>
+          <span class="pool-count" id="pool-count">0</span>
+        </div>
+        <p class="pool-note">Every remaining possible answer. Click any word to load it as
+          your guess — the solver suggests, <b>you decide</b>. Playing a word
+          other than the top suggestion is fine; you just carry the turn cost.</p>
+        <div id="pool-list" class="pool-grid" aria-live="polite"></div>
+        <div id="pool-more" class="pool-more hidden"></div>
       </section>
     </div>
 

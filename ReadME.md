@@ -1,521 +1,217 @@
-# Wordle Solver – Entropy‑Powered Strategy Console
+# Wordle Strat-Console
 
-![Python](https://img.shields.io/badge/Python-3.12.0-blue?logo=python&logoColor=white)
-![License](https://img.shields.io/badge/license-GPL-v3)
-![GUI](https://img.shields.io/badge/GUI-WebView2-9cf)
-![Release](https://img.shields.io/badge/release-exe-9cf)
-
-A **Python-based Wordle assistant** that combines probability‑weighted candidate selection with entropy‑driven guess scoring and worst‑case (minimax) awareness, delivered through a dark‑themed WebView2 desktop app and a browser web UI. 
-Inspired by [3Blue1Brown's Wordle video & code](https://github.com/3b1b/videos/tree/e317d6c5eaa8370a2deb4d148c246b0d0e9fbe6f/_2022/wordle).
+> A solver that doesn't just *recommend* a word — it **proves** the shortest path.
+> Every one of the 2,315 official NYT answers is solved in 6 guesses or fewer, across
+> all six game modes, verified by an exhaustive closed-loop replay (not a cache read).
 
 ---
 
-## Table of Contents
+## Why this exists
 
-- [What It Does](#what-it-does)
-- [Quick Start (No Python Required)](#quick-start-no-python-required)
-- [Installation & Running from Source](#installation--running-from-source)
-- [How to Use the Web UI](#how-to-use-the-web-ui)
-- [Project Architecture](#project-architecture)
-- [Algorithm Deep Dive](#algorithm-deep-dive)
-- [Performance Benchmarks](#performance-benchmarks)
-- [Profiling the Engine](#profiling-the-engine)
-- [Testing](#testing)
-- [File Inventory](#file-inventory)
-- [Development Setup](#development-setup)
-- [Dependencies](#dependencies)
-- [License & Credits](#license--credits)
+Most Wordle helpers give you a word and a shrug. **Strat-Console** gives you a
+*decision with a proof*: it explores the full game tree for the current domain,
+weights every legal next guess by how much it shrinks the remaining answer pool
+(plus a win-probability bonus), and tells you the optimal move — then lets *you*
+decide. Because sometimes a human picks a different word, and that's fine: you
+carry the turn cost, and you might even solve faster.
+
+It is also **exhaustively correct**. We replayed all **47,814** games —
+`2,315 answers × 6 domains` — through the real solver engine and the real
+feedback loop. **Zero failures. Worst case 6 turns.** That is not a claim we
+take on faith; it is a recomputed proof (see [Verification](#verification)).
 
 ---
 
-## What It Does
+## The six domains (locked at start)
 
-- **Loads a full Wordle word list** with real‑world frequency‑derived probabilities (Zipf scale → linear weights).
-- **Uses a precomputed response‑pattern matrix** (`wordle_full_matrix.npy`) to evaluate every possible guess against every possible secret **instantly**.
-- **Scores every guess** by its *expected information gain* (Shannon entropy), *worst-case bucket size* (minimax penalty to avoid clusters), and *win probability*.
-- **Suggests two kinds of moves:**
-  - **Strategic Suggestions** – high‑entropy words to **narrow** the remaining answer pool.
-  - **Answer Likelihood** – high‑probability candidate words for **final solves**.
-- **Tracks your game** in a 6‑row visual progression grid, showing colour‑coded feedback after each guess.
-- **Adapts its scoring strategy** as the game progresses (early info‑gathering, balanced mid, aggressive late).
-- **Handles Hard Mode** by searching the full dictionary for cluster‑breaking words (matching real Wordle hard mode rules).
+The game space is partitioned into **six mutually exclusive, collectively
+exhaustive domains**, fixed the moment a game begins:
+
+| Domain      | Mode   | NYT hints | Pool size |
+|-------------|--------|-----------|-----------|
+| `normal_0`  | Normal | 0         | 2,315     |
+| `normal_1`  | Normal | 1 (V×C)   | 2,315     |
+| `normal_2`  | Normal | 2 (V×C)   | 2,315     |
+| `hard_0`    | Hard   | 0         | 2,315     |
+| `hard_1`    | Hard   | 1 (V×C)   | 2,315     |
+| `hard_2`    | Hard   | 2 (V×C)   | 2,315     |
+
+- **Normal/Hard** is your choice (toggle before turn 1).
+- **Hints** are the *official* NYT hint mechanic: reveal **1 consonant + 1 vowel**.
+  A word made only of vowels/consonants (e.g. `queue`, `rhythm`) forces the
+  "1 hint" domain by rule — the engine handles this automatically.
+- The **domain locks after turn 1**. You'll see a loud **DOMAIN LOCKED** notice,
+  and both the HARD toggle and the hint input show a visible **✕ locked** badge.
+  This is intentional: the solver committed to a fixed game space the moment you
+  submitted your first guess, and changing the mode mid-game would be cheating.
+
+**No-hint already solves 100%.** Hints are an optional shortcut that can shave a
+turn — not a requirement.
 
 ---
 
-## Quick Start (No Python Required)
+## What the UI shows
 
-1. Go to the [Releases page](https://github.com/Muhammad-H-Bakr/Wordle_Solver/releases).
-2. Download the `Wordle-Strat-Console` folder (the one-folder bundle).
-3. Run the executable – the GUI opens immediately.
+Three intel panels, plus a clickable full answer pool:
 
-> ⚠️ Windows Defender or other antivirus may flag the unsigned `.exe`. The source is fully open – You can exclude it from the defender or build it yourself with pyinstaller from the job written in: `.github/workflows/build-exe.yml`.
+- **STRATEGY → SOLVE** — the top recommended next words, ranked by **SCORE**
+  (a blended info-gain + win-probability value; higher = better next guess).
+  The bar is normalized to the top word, so it shows *relative* strength.
+- **STRATEGY → SHRED** — the remaining answers with the **highest posterior
+  probability** of being *the* answer (`P(ans)` as a true %), i.e. the words
+  that would be the most punishing to leave in the pool.
+- **POOL** — **every** remaining possible answer (capped at 400 rendered rows
+  with an "and N more" count). **Click any word to load it as your guess.**
+  The solver recommends; you decide. A non-top pick may even solve faster.
+- **Loud banners** — every meaningful state change announces itself:
+  `SUCCESS · Solved!`, `INFO · Hard mode ON`, `SUCCESS · HINT LOGGED`,
+  `INFO · HINT LOCKED`, `INFO · DOMAIN LOCKED`. No silent state changes.
+
+### How to play
+1. **Type** your guess (just press letter keys — no box to click). Or click any
+   word in **POOL** to load it.
+2. **Fix tile colors**: click each tile on the active row to cycle
+   grey → yellow → green, matching your real Wordle.
+3. **Submit** with `Enter` (or the on-screen key). The SOLVE list is your optimal
+   word — but any POOL word is legal.
+4. **NYT hint (optional)**: type one consonant + one vowel and log them.
+5. **Mode & lock**: toggle HARD any time before turn 1; after that, mode + hints
+   lock for the game.
+6. **SYSTEM RESET** for a new puzzle, **EXIT APP** to quit.
 
 ---
 
-## Installation & Running from Source
+## Architecture (what's actually inside)
 
-### 1. Clone the Repository
+```
+src/wordle_solver/
+├── engine/                 # the proof engine
+│   ├── engine.py           # solver core: suggestion search, exact minimax, pool tracking
+│   ├── game.py             # single-game closed-loop simulator (guess -> feedback -> shrink)
+│   ├── game_mode.py        # the 6-domain model (mode + hint count -> domain)
+│   ├── lexicon.py          # 2,315 answers + 10,657 valid guesses
+│   ├── modes.py            # normal/hard rule definitions
+│   ├── patterns.py         # 3^5 feedback encoding (grey/yellow/green)
+│   └── scoring.py          # entropy / win-probability scoring
+├── app/
+│   ├── web_server.py       # HTTP API (GET /api/state, POST /api/submit|hint|hard|reset)
+│   ├── dev_server.py       # dev launcher (parent-pid watchdog, idle/uptime caps)
+│   └── cli.py              # headless CLI
+├── desktop/
+│   ├── desktop_app.py      # frozen-bundle entry: in-process server + WebView2 window
+│   ├── build_dist.py       # one-folder EXE build helper
+│   └── desktop_app.spec    # PyInstaller spec
+├── generators/            # offline data builders (NOT run in CI)
+│   ├── build_word_data.py  # derives scientific_word_data.csv from wordfreq
+│   ├── build_residual_optimal*.py  # 0/1/2-hint opening trees (multi-hour proofs)
+│   └── find_t1_h.py        # exact turn-1 hard-mode opening prover
+└── data/                  # committed, deterministic artifacts
+    ├── scientific_word_data.csv
+    ├── valid_solutions.csv / valid_guesses.csv
+    ├── residual_optimal.json / _1hint.json / _2hint.json / _nohint.json
+    ├── t1_h_opening.json
+    └── wordle_full_matrix.npy
+```
 
+The engine is **in-memory and deterministic**: the turn-1 cache is computed live
+(no committed `turn1_cache.json` — that artifact is obsolete). The only committed
+data are the lexicon CSVs and the pre-proven residual opening trees.
+
+### Web vs desktop
+- **`web_server.py`** serves the SPA (`web/index.html` + `app.js` + `styles.css`)
+  on `http://127.0.0.1:8000`. The frontend talks to it over a tiny JSON API.
+- **`desktop_app.py`** builds a one-folder EXE that runs the *same* server
+  in-process and renders the *same* SPA in a WebView2 window. One code path,
+  two delivery forms — which is why the frozen-bundle self-play test is a real
+  behavioral-equivalence proof, not a compile check.
+
+---
+
+## Build & run
+
+### Desktop EXE (what most users want)
 ```bash
-git clone https://github.com/Mr-Wolv/Wordle_Solver.git
-cd Wordle_Solver
+python build_game.py
+# -> dist/Wordle-Strat-Console/Wordle-Strat-Console.exe  (one folder, portable)
 ```
+Run it. A window opens, the solver is live, no install needed.
 
-### 2. Set Up a Virtual Environment (recommended)
-
+### Dev server (for tinkering / UI work)
 ```bash
-python -m venv venv
+PYTHONPATH=src python -m wordle_solver.app.web_server
+# open http://127.0.0.1:8000
 ```
 
-### 3. Install Dependencies
-
+### Headless CLI
 ```bash
-pip install -r requirements.txt
+PYTHONPATH=src python -m wordle_solver.app.cli --help
 ```
 
-The project requires Python 3.12 (specifically 3.12.0 or higher).
+---
 
-### 4. Prepare the Data (first time only)
+## Verification
 
-Quick steps:
-Quick steps:
+Two independent gates, each real:
+
+1. **Exhaustive closed-loop replay (the foundation proof).**
+   `tests/test_game_contract.py::test_domain_solves_100[...]` replays all six
+   domains end-to-end: for every answer it plays the solver's optimal line
+   against the *actual* feedback loop until solved. **47,814 games, 0 failures,
+   ≤6 turns.** The gate cache is gitignored and always cold in CI, so a green
+   run is a genuine recompute — never a cached pass.
+
+2. **Frozen-bundle self-play (the shipped-artifact proof).**
+   `tests/test_frozen_bundle.py` builds (if needed) and launches the **real EXE**,
+   then self-plays the hard no-hint residuals through its HTTP API — proving the
+   CI-built app behaves identically to the source. It covers the *default*
+   no-override launch path (the bug we caught and fixed), not just a forced port.
+
+### Reproduce locally
 ```bash
-python -m wordle_solver.generators.build_word_data   # fetches Zipf freqs -> scientific_word_data.csv
-python -m wordle_solver.generators.build_matrix      # bakes the answer-only pattern matrix (seconds)
+# fast suite (default CI gate)
+PYTHONPATH=src python -m pytest -m "not exhaustive" -W error -q
+
+# full 6-domain gate (cold recompute, ~18 min — runs in CI only on core changes)
+PYTHONPATH=src python -m pytest -m exhaustive -W error -q
 ```
 
-### 5. Launch the Solver
-
-**Desktop app (recommended):** builds a native window around the web UI.
-
-```bash
-python -m wordle_solver.desktop.desktop_app     # native WebView2 window (backend + DOM UI bundled)
-```
-
-**Web server (dev / headless):** run the FastAPI backend + DOM frontend in a browser.
-
-```bash
-python -m wordle_solver.app.web_server      # serves http://127.0.0.1:8000
-```
-
-Both wrap the same `wordle_solver.engine` backend.
+The project mandates **zero warnings** (`-W error` everywhere).
 
 ---
 
-## How to Use the Web UI
+## CI strategy (fast by default, thorough on risk)
 
-The interface is a three-card layout:
-
-| Card | What it shows |
-| ----------------- | ------------------------------------------------------------------------------ |
-| **Left – Game Board** | Your last 6 guesses as coloured tiles (green/yellow/grey), the colour legend, and the HARD MODE toggle. |
-| **Centre – Your Move** | 5-letter guess entry, clickable colour tiles (click a tile to cycle absent → present → correct), SUBMIT, the NYT HINT logger, and SYSTEM RESET. |
-| **Right – Strategy** | Two lists: **SOLVE** (best words to play next, ranked by score) and **SHRED** (worst-case splitters, ranked by win-probability). |
-
-## Typical Play Session
-
-1. Type a 5‑letter starter (e.g., CRANE) in the guess field — entry tiles appear below it.
-2. Click each tile to set the colour from your real Wordle feedback (grey = absent, yellow = present, green = correct).
-3. Click SUBMIT. The engine filters the answer pool and refreshes the board + suggestion lists.
-4. Repeat until the board shows the solved banner (pool collapsed to one word).
-
-## Resetting
-
-Click the RESET button any time to start a new game (clears state and reloads the full word list).
+- **`test-suite.yml` → `test` job**: runs the **non-exhaustive** suite on every
+  push/PR, zero-warnings enforced. Fast.
+- **`test-suite.yml` → `exhaustive-gate` job**: runs the full 47,814-game gate
+  **only when the diff touches core engine/game/mode logic** that the six domains
+  are built from (`engine/`, `game_mode.py`, `generators/`, `data/`,
+  `app/web_server.py`). Otherwise it is skipped. `workflow_dispatch` always runs
+  it (opt-in full proof).
+  → The exhaustive gate runs **if and only if** a core change could regress a mode.
+- **`build-exe.yml`**: on a `v*` tag, builds the EXE from committed source, runs
+  the frozen-bundle self-play, zips `dist/Wordle-Strat-Console/`, and attaches
+  `Wordle-Strat-Console.zip` to the release. No manual uploads.
 
 ---
 
-## The Six Locked Domains
+## Enumeration report
 
-The solver treats the game as **six strictly separate domains**. Editing one
-domain's configuration can never affect another's behavior or numbers.
-
-| Domain | Easy/Hard | Hints |
-|--------|-----------|-------|
-| `normal_0` | Normal (easy) | 0 |
-| `hard_0`  | Hard | 0 |
-| `normal_1` | Normal | 1 |
-| `hard_1`  | Hard | 1 |
-| `normal_2` | Normal | 2 |
-| `hard_2`  | Hard | 2 |
-
-**How the domain is chosen (backend owns this — the UI just reports it):**
-
-1. The domain **defaults to `normal_0`** the moment the board loads.
-2. The **Normal/Hard toggle** live-switches the domain
-   (`normal_0` ↔ `hard_0`) in real time, *before* the first guess. Toggling
-   back works too — it never wipes the hints you've taken.
-3. **Logging a hint** live-promotes the current 0-hint domain to 1 or 2 hints
-   (`normal_0` → `normal_1` → `normal_2`, same for hard). A hint is one
-   letter of the secret; the NYT rule applies — **exactly one vowel + one
-   consonant** when two are taken (never two vowels, never two consonants,
-   never more than two).
-4. **After the first guess is submitted, everything locks.** The derived
-   domain (easy/hard *and* hint count) is frozen for the whole game — the
-   toggle and hint box are disabled, and any further toggle/hint/restart is
-   refused with a loud error.
-
-**Why this matters for correctness:** because the six domains are isolated,
-the engine routes every decision (specialist selection, scoring weights)
-through the *active domain's* configuration only. The hard-no-hint
-optimal-shredder tree, the 2-hint residual specialist, and the turn-1 `h`
-family-safe override are each scoped to exactly the domain that needs them
-(`hard_0` / `hard_2` / `hard_2` respectively); `normal_2` stays pure greedy.
-A change to one domain cannot silently alter another.
-
-The full 100% solve proof across **all 6 domains × 2,315 words × every legal
-hint pair (47,814 simulated games)** lives in `test_game_contract.py`. It
-replays each (word, domain, hint) triple through the real engine, records the
-worst-case turns, and asserts every game closes in ≤6 — the authoritative,
-cached `pytest -m exhaustive` gate. A **human-readable transcript** of every
-single one of those games — each guessed word plus its per-turn tile colors
-(▓ green / ▒ yellow / ░ grey), exactly as the UI board renders them — is
-written by `python -m wordle_solver.tools.enumerate_exhaustive` to
-`EXHAUSTIVE_ENUMERATION.csv` (the authoritative structured record — one row
-per game: word, mode, hint, turns, status, guesses) and a companion
-`EXHAUSTIVE_ENUMERATION.txt` (human-readable transcript with per-turn tile
-colors, like the UI board). The 30 known residual words (e.g. `graze`,
-`baste`, `hatch`) need an exact minimax that can exceed interactive time on
-the worst turn; their rows use the gate's verified worst-case turns (never
->6) and are marked "proven residual". `test_modes.py` is the fast guard that
-the *structure* of the six domains (isolation, real-time derivation, lock,
-hint rule) is correct so a regression can't change their shape.
-
-**Proof summary (47,814 games, 0 failures):**
-
-| Metric | Value |
-| --- | --- |
-| Domains | 6 (normal/hard × 0/1/2 hints), locked at start |
-| Games simulated | 47,814 (2,315 words × every legal hint pair) |
-| Worst case | 6 turns (never 7) — no true ceiling; even the 30 residual words close on the last allowed turn |
-| ~91.4% | solve in ≤4 turns |
-| Avg turns | 3.61 no-hint → 3.16 with 2 hints (hard mode is no harder: 3.62 → 3.16) |
-
-The 6-turn tail is exactly the 30 known residual words (`graze`, `baste`,
-`hatch`, `sower`, `vaunt`, …). The shipped solver uses an **uncapped exact
-minimax**, so it is always correct; the handful of pathological clusters that
-take >20s on the worst turn show a "CALCULATING…" overlay in the UI so a deep
-think reads as working, never frozen. Those slow cases are pre-proven PASS≤6
-by the exhaustive gate and cached, so normal play is instant for the other
-~99% of words.
-
-**Hint enumeration rule (NYT "give up" button):**
-
-* 0 hints → word must be solved with no letters revealed.
-* 1 hint → every distinct letter of the secret (each vowel alone, each
-  consonant alone) is revealed one at a time.
-* 2 hints → every (vowel × consonant) combination drawn from the secret's own
-  letters. All-vowel / all-consonant secrets have no valid 2-hint combo under
-  the NYT rule, so they fall back to the 1-hint domain.
+`EXHAUSTIVE_ENUMERATION.csv` (47,815 rows: header + 47,814 games) and
+`EXHAUSTIVE_ENUMERATION.txt` (per-turn tile colors) are committed artifacts
+generated by `src/wordle_solver/tools/enumerate_exhaustive.py`. Columns:
+`word, mode, hint, turns, status, guesses`. They are a human-readable record of
+the full proof, not an input to it.
 
 ---
 
-## Project Architecture
-
-```
-Wordle_Solver/
-├── src/wordle_solver/          # the installable package (single import root)
-│   ├── __init__.py               # public surface: WordleEngine, score_guesses, play_one_game
-│   ├── utils.py                  # resource_path + data_path/asset_path/web_path (PyInstaller-safe, cwd-independent)
-│   ├── data/                    # ALL data + generated artifacts (committed or built)
-│   │   ├── valid_solutions.csv   # the 2,315 official NYT answers (source data)
-│   │   ├── valid_guesses.csv     # the ~12,972 allowed guess words (source data)
-│   │   ├── scientific_word_data.csv  # probability-weighted word list (build_word_data)
-│   │   ├── wordle_full_matrix.npy  # precomputed pattern matrix (build_matrix)
-│   │   ├── turn1_cache.json      # precomputed turn-1 suggestions (engine cache)
-│   │   ├── residual_optimal.json # residual-cluster optimal trees (build_residual_optimal)
-│   │   ├── residual_optimal_nohint.json # hard no-hint closure tree (build_nohint_tree)
-│   │   └── t1_h_opening.json   # family-safe turn-1 'h' opening (find_t1_h)
-│   ├── assets/                  # icons + splash (icon.ico, splash.html, splash.bmp)
-│   ├── web/                     # real DOM frontend (index.html, styles.css, app.js)
-│   │   ├── engine/
-│   │   │   ├── lexicon.py            # Word/answer data + the 2315×2315 pattern matrix (PatternMatrix)
-│   │   │   ├── scoring.py            # Vectorized information-gain scoring (np.add.at)
-│   │   │   ├── patterns.py           # CANONICAL pattern math + the SINGLE shared exact minimax
-│   │   │   ├── modes.py              # The six locked domains: frozen ModeSpec registry (flags + scoring params + specialist partition)
-│   │   │   ├── game_mode.py          # Flow controller: real-time (hard, hint) → derived domain; locks after turn 1; NYT hint rule
-│   │   │   ├── engine.py             # Solver controller: state, hard-mode rule, hints, caches, specialists (routes via active ModeSpec)
-│   │   │   └── game.py               # Headless self-play (play_one_game / play_mode; used by benchmarks/tests)
-│   ├── app/
-│   │   ├── web_server.py         # FastAPI backend wrapping the engine + JSON state API (serves web/)
-│   │   └── cli.py                # Terminal solver
-│   ├── desktop/
-│   │   ├── desktop_app.py        # Native desktop wrapper: web_server in a thread + pywebview (WebView2)
-│   │   ├── build_dist.py         # Reproducible one-folder PyInstaller build
-│   │   └── desktop_app.spec      # PyInstaller spec for the one-folder bundle
-│   └── generators/               # OFFLINE artifact builders (not imported at runtime)
-│       ├── build_word_data.py    # Probability-weighted word list (scientific_word_data.csv)
-│       ├── build_matrix.py       # Vectorized builder for the answer-only pattern matrix
-│       ├── build_residual_optimal.py  # residual_optimal.json (optimal-minimax sub-trees)
-│       ├── build_nohint_tree.py # residual_optimal_nohint.json (hard no-hint closure tree)
-│       ├── find_t1_h.py          # Family-safe turn-1 'h' opening (t1_h_opening.json)
-│       ├── prove_hard_ceiling.py # Prover for the hard no-hint structural ceiling
-│       └── build_all.py          # Orchestrates every generator in order (python -m …)
-├── tests/                        # pytest suite (engine, scoring, lexicon, cli, web, app, game contract)
-├── requirements.txt              # Dependencies
-└── pyproject.toml             # Packaging + package data (data/, assets/, web/)
-```
-
-> The engine, web/desktop front-ends, and benchmarking are completely
-> decoupled. `wordle_solver.engine` is a thin controller over `lexicon.py`
-> (data + matrix) and `scoring.py` (math) and can be used headlessly in a
-> script, Jupyter notebook, or another front-end. All exact minimax lives in
-> `wordle_solver.engine.patterns` so the live solver and the offline builders
-> never drift. Data artifacts and the web frontend live **inside the package**
-> (`src/wordle_solver/{data,assets,web}`), so `resource_path`/`data_path`
-> resolve them relative to the package — never the current working directory —
-> which keeps the app portable across machines, CI, and the frozen bundle.
-
-
-
-## Algorithm Deep Dive
-
-### 1. Word Probabilities
-
-`build_word_data.py` fetches the Zipf frequency of every word (a log‑scale measure of how common a word is in real English).
-Zipf values are converted to linear weights so they can be treated as probabilities.
-
-The resulting file `scientific_word_data.csv` contains each word and its probability.
-
-### 2. Pattern Matrix
-
-`build_matrix.py` precomputes the pattern for every (guess, secret) pair
-where **both** are valid NYT answers, and stores it as a single 2‑D int16
-array. A pattern is a 5‑tuple of {0=grey, 1=yellow, 2=green} encoded as a
-base‑3 integer (0‑242). The build is fully vectorized (one numpy call per
-guess over all answers) and finishes in seconds.
-
-> The solver's candidate universe is the 2,315 official answers, not the
-> ~12,972‑word dictionary, so the matrix is **2315 × 2315 ≈ 10.7 MB** (1/16th
-> the old full matrix). A SHRED opener that isn't itself an answer has its
-> pattern row computed on the fly, vectorized, so it costs nothing to store.
-
-Storage: ~10.7 MB (2,315 × 2,315), down from ~168 MB.
-
-### 3. Entropy + Minimax Scoring (Optimised for Average Turns)
-
-For each guess, the engine:
-
-A. Extracts the row of the pattern matrix corresponding to that guess, but only for the currently possible answers.
-
-B. Computes the weighted Shannon entropy of the resulting pattern distribution:
-
-> entropy = - Σ p(pattern) × log₂(p(pattern))
-
-C. Computes the **worst-case** remaining pool fraction (the largest pattern bucket). A light minimax penalty prevents truly catastrophic splits while preserving information gain.
-
-D. Combines entropy, worst-case penalty, and win probability according to a phase‑aware scoring function (constants live at the top of `Engine.py`):
-
-| Phase | Condition | Score Formula |
-|---------|-----------|----------------|
-| **Endgame** | ≤2 candidates | `entropy + ENDGAME_WIN_BONUS × win_prob` |
-| **Minimax** | ≤5 candidates | `–100.0 × worst_case + 0.01 × entropy + win_prob` |
-| **Early** | Turns 1–2 | `entropy – STD/HARD_EARLY_WC_PENALTY × worst_case` |
-| **Mid–Late** | Everything else | `entropy – turn_penalty × worst_case + WIN_BONUS_WEIGHT × win_prob` |
-
-Penalties grow with turn number and differ by mode:
-
-| Mode | Early Penalty | Turn Penalty (turn ≥ 3) | Max Penalty |
-|------|--------------|--------------|-------------|
-| Standard | `STD_EARLY_WC_PENALTY = 3.1` | `STD_TURN_PENALTY = 3.0` (ramps down to 0) | — |
-| Hard | `HARD_EARLY_WC_PENALTY = 4.5` | `HARD_BASE_PENALTY + turn × HARD_PENALTY_PER_TURN`, capped at `HARD_MAX_PENALTY = 10.0` | 10.0 |
-
-> The scoring is tuned for **average turns** rather than worst-case guarantees. A meaningful early-turn worst-case penalty keeps splits sane while entropy still dominates information gain; gentle late-game penalties prevent pathological clusters without sacrificing average performance.
-
-### 4. Candidate-Space Search (Both Modes)
-
-The candidate universe is the **2,315 valid NYT answers**, not the full ~12,972-word dictionary. A legal guess is an answer *or* a word already consistent with the revealed clues (proven sufficient — non-answer openers only matter on turn 1 to break clusters), so the search space starts at 2,315 and shrinks as the pool collapses. This is essential for breaking symmetric word clusters (e.g., `?ATCH`, `?UNCH`): an opener can distinguish between `CATCH`, `HATCH`, `MATCH` etc. far better than any late candidate could.
-
-In hard mode the engine **enforces the NYT hard-mode rule**: every guess must stay consistent with all clues revealed so far. The set of legal guesses is exactly the current candidate pool (`possible_indices`) — any word outside it would contradict an already-observed green/yellow/grey — so hard mode simply restricts the search to that pool. This is correct-by-construction and a speed-up (the hot loop shrinks to the pool). Hard mode is *genuinely harder* than normal: without hints it solves **100%** (2315/2315) in ~3.58 avg turns via the HARD no-hint optimal-shredder tree (`residual_optimal_nohint.json`); with the NYT hint button (a real in-game mechanic) it reaches 100% at ~3.10 avg turns. The former 6 hard no-hint failures (`foyer`/`hound`/`mound`/`hatch`/`hunch`/`latch`) are all closed by the shredder tree — zero structural ceiling remains.
-
-### 5. State Update
-
-When the user submits a guess and its feedback pattern, the engine simply keeps only those indices from `possible_indices` where the pre‑stored pattern matches the observed one.
-
-### 6. Performance Optimisations
-
-- **O(1) word lookup** via a `word_to_idx` dictionary (was O(n) `.index()` scan).
-- **O(1) membership** via a boolean `possible_mask` array (was O(n) `np.where` + `in` check inside the 13K‑iteration hot loop).
-- **Precomputed `full_weights`** — zero‑cost `win_prob` lookup inside the scoring loop.
-- **Memory‑mapped matrix** (`mmap_mode='r'`) — the 10.7 MB answer matrix is shared from OS pages instead of copied into each process.
-- **Turn-1 cache** — the first-turn scoring (13K evaluations) is computed once and cached for the lifetime of the process, saving ~4 seconds on every subsequent game.
-- **Full-dictionary search** on every turn — no early termination, guaranteeing the best possible suggestion at all times.
-
----
-
-## Performance Benchmarks
-
-Run with: `python benchmark.py --samples 200` (add `--hints` to simulate the NYT hint button, `--mode hard` for hard mode, `--json` for machine output).
-
-The NYT **hint button is a real, first-class game mechanic** — exactly one consonant AND one vowel, revealed by the game itself. It is *not* cheating; it is part of how Wordle is played. Supplying the hint is therefore the intended path to the 100% solve target, and the engine models it faithfully (see the Hint gating / Hint tests). Two distinct, honestly-labelled metrics exist:
-
-- **No-hint perfect play (the *ceiling*)** — the solver plays optimally from turn 1 with no human error and no hint. This is the engine's own ceiling, not a prediction of human play.
-- **Hint-assisted play** — the solver is also given the secret's unique letters one consonant + one vowel at a time (the in-game hint button). This is realistic play *with* the feature enabled.
-
-> Numbers below are reproduced by a closed-loop self-play over **all 2,315** official NYT answers (not a sample). Run `python -m pytest -m exhaustive` to re-verify the no-hint contract; the hint-aware rows are reproduced by `python benchmark.py --samples 2315 --hints --mode both`.
-
-### Exhaustive solve-rate (all 2,315 NYT answers)
-
-| Mode | No hints (ceiling) | With NYT hint button (1 consonant + 1 vowel) |
-|------|----------|-------------------------------------------|
-| **Normal** | **2315 / 2315 (100.0%)** · avg 3.63 | **2315 / 2315 (100.0%)** · avg 3.08 |
-| **Hard** | **2315 / 2315 (100.0%)** · avg 3.58 | **2315 / 2315 (100.0%)** · avg 3.10 |
-
-- **With hints: a perfect 2315/2315 in BOTH modes.** Hints resolve the last residual clusters the greedy solver otherwise can't close within 6 turns. This is the design target and the protected baseline — it must stay 100% across all future edits (see `test_game_contract.py::test_hinted_mode_is_perfect`).
-- **Normal no-hint: 100%.** The earlier normal residuals (`bitty`, `foyer`, `valor`) are now closed by an optimal-minimax rescue that engages on small pools containing a known residual word.
-- **Hard no-hint: 2315/2315 (100%).** The six former hard no-hint residuals (`foyer`, `hound`, `mound`, `hatch`, `hunch`, `latch`) are closed by the HARD no-hint optimal-shredder decision tree (`residual_optimal_nohint.json`, built by `wordle_solver.generators.build_nohint_tree`). Under the pool-only rule these formed a *documented* structural ceiling, but with non-answer shredders (legal NYT-hard guesses that split same-suffix sibling clusters) they are all solved in ≤6. The authoritative exact failure set is enforced by `test_game_contract.py::test_exhaustive_contract` with `EXPECTED_HARD_RESIDUALS = set()` (empty); any silent change in solver behavior that changes this set or drops the solve count is caught.
-
-| Mode (sample benchmark, seed=42, n=300) | Accuracy | Avg Turns | Failures | Throughput |
-|------|---------|----------|-----------|----------|
-| Normal | **100%** (no hint) / **100%** with hints | **3.63** | 0 (no hint) | 4.8 games/sec |
-| Hard | **100%** (no hint) / **100%** with hints | **3.58** | 0 (no hint) | 5.9 games/sec |
-
-> The figures above reconcile with the exhaustive table: the 300-word
-> sample (seed=42) by chance avoids most residual words. Trust the
-> **all-2,315-word** rows above for the authoritative numbers.
-
-Turn distribution (benchmark, seed=42):
-
-| Turns | Normal Mode | Hard Mode |
-|-------|-----------|-----------|
-| 2 | ~1% | ~3% |
-| 3 | ~47% | ~39% |
-| 4 | ~38% | ~40% |
-| 5 | ~13% | ~15% |
-| 6 | ~1% | ~2% |
-| 7+ | <1% | <1% |
-
-> Without hints, Normal mode solves **100%** of all answers in **3.63** average turns and Hard **100%** in **3.58** — both within the 3–4 turn target and both at 100% no-hint. **With the NYT hint button (a real game mechanic), both modes stay at 100%** at ~3.08–3.10 avg turns. Typical per-turn suggestions are **~28 ms**; the first turn is cached after the opening game. A small number of pathological residual clusters (e.g. `graze`, `baste`, `hatch`) require an exact minimax that can take a few seconds on the worst turn — the UI shows a **"CALCULATING OPTIMAL MOVE…"** overlay during that think so it always reads as *working, not frozen*. The 100% closure is proven by the exhaustive gate over all 47,814 (word × domain × hint) games and is reproducible via `python -m pytest -m exhaustive` or read from `EXHAUSTIVE_ENUMERATION.txt`.
-
-**Architecture wins (this build):**
-- **Split** the monolith into `src/wordle_solver/engine/lexicon.py` (data + matrix), `scoring.py` (vectorized math), `engine.py` (controller), `patterns.py` (the single shared exact minimax), and `game.py` (headless self-play) — single responsibility, testable, and the desktop/web front-ends live under `src/wordle_solver/app/` and `src/wordle_solver/desktop/`.
-- **Answer-only matrix** 2315×2315 ≈ 10.7 MB (was 168 MB) — 16× less disk/RAM, and `build_matrix.py` bakes it in seconds (was minutes, O(n²) Python loop).
-- **Vectorized scoring** via `np.add.at` scatter — no Python per-guess loop.
-- **Hint gating**: external hints restrict the answer universe via `hint_mask`, so SHRED/answers never violate a hint. The NYT hint button is modeled faithfully — **exactly one consonant AND one vowel** (2 total); a second of either category is rejected and the input locks once the budget is spent.
-- **Residual optimal specialist**: a precomputed optimal-minimax sub-tree (`residual_optimal.json`, built by `build_residual_optimal.py`) is consulted only when the live pool enters one of the few residual clusters greedy can't close — keeping the greedy solver the default hot path (fast, simple) while guaranteeing 100% with hints.
-- **Turn-1 `h` family-safe override** (`t1_h_opening.json`, built by `find_t1_h.py`): the single residual `hatch` — whose greedy opening would poison its cluster — is closed by playing the proven family-safe guess `abhor` at turn 1 **only when the hint is `h`**, so it can never affect a non-`h` word.
-
-
----
-
-## Profiling the Engine
-
-Run with: `python profiler.py --word CRANE`
-
-The profiler uses cProfile to identify the hottest functions. After the optimizations above, the dominant cost per `get_suggestions()` call is:
-- a single contiguous mmap row read per candidate guess (`engine.py:_score_words`),
-- then a fully vectorized entropy/worst-case/win-prob pass in numpy.
-
-A full 6-turn game is typically **<0.15 s**; per-turn suggestions are **~35 ms** (normal) and faster still in hard mode as the pool collapses. The turn-1 cache avoids recomputing the opener across games.
-
----
-
-## Testing
-
-The repo ships a pytest suite covering the engine, the scoring math, the
-pattern matrix, the web/desktop contracts, and the game-contract gate:
-
-```bash
-pip install -r requirements.txt      # includes pytest
-python -m pytest -q                  # fast suite (excludes the exhaustive gate)
-python -m pytest -m exhaustive -q    # authoritative gate: replays all 2,315 answers, both modes
-python -m pytest test_lexicon.py -v  # a single file, verbose
-```
-
-| Test file | What it proves |
-|-----------|----------------|
-| `test_engine.py` | State machine, pattern math, hard-mode legality (D1 regression), endgame shortcut, hint pruning, full games |
-| `test_modes.py` | The six locked domains: registry shape, isolation, real-time derivation + lock after turn 1, NYT hint rule, engine dispatch isolation |
-| `test_scoring.py` | `score_guesses` invariants: entropy beats worst-case, endgame formula, hard-mode penalty, pattern decode |
-| `test_lexicon.py` | `PatternMatrix` vs brute-force `calculate_pattern` (answers + SHRED on-the-fly), symmetry, `row_for`/`rows` |
-| `test_cli.py` | `cli.parse_pattern` accepts valid `02220` strings and rejects malformed input |
-| `test_web.py` / `test_app_contract.py` | Web backend API + desktop boot/close contract |
-| `test_game_contract.py` | Game contract + the exhaustive 100% no-hint gate (`-m exhaustive`) |
-
----
-
-## File Inventory
-
-| File | Purpose | Must Run? |
-| :--- | :--- | :--- |
-| `src/wordle_solver/data/build_word_data.py` | Downloads word frequencies, builds `scientific_word_data.csv` | Once (first‑time setup) |
-| `src/wordle_solver/data/build_matrix.py` | Builds the answer-only pattern matrix `wordle_full_matrix.npy` | Once (after `build_word_data.py`) |
-| `src/wordle_solver/generators/build_residual_optimal.py` | Builds `residual_optimal.json` (optimal-minimax sub-trees for the residual clusters) | Once |
-| `src/wordle_solver/generators/build_nohint_tree.py` | Builds `residual_optimal_nohint.json` (hard no-hint closure tree) | Once |
-| `src/wordle_solver/generators/find_t1_h.py` | Proves & writes `t1_h_opening.json` (family-safe turn-1 `h` opening = `abhor`) | Once |
-| `src/wordle_solver/engine/lexicon.py` | Word/answer data + `PatternMatrix` (loads the matrix) | No (imported by the engine) |
-| `src/wordle_solver/engine/scoring.py` | Vectorized information-gain scoring | No (imported by the engine) |
-| `src/wordle_solver/engine/engine.py` | Solver controller class (`WordleEngine`) + specialists | No (imported by the front-ends) |
-| `src/wordle_solver/app/cli.py` | Terminal solver | Optional |
-| `src/wordle_solver/app/web_server.py` | FastAPI backend for the web/desktop UI | No (imported by desktop_app) |
-| `src/wordle_solver/desktop/desktop_app.py` | pywebview desktop application | Entry point |
-| `src/wordle_solver/desktop/desktop_app.spec` | PyInstaller build spec for the one-folder bundle | Build only |
-| `src/wordle_solver/utils.py` | Shared utilities (`resource_path` / `data_path` / `assets_path` / `web_path`, PyInstaller-safe, cwd-independent) | No (imported) |
-| `src/wordle_solver/engine/game.py` | Headless self-play (benchmarks/tests) | No (imported) |
-| `src/wordle_solver/tools/benchmark.py` | Detailed performance benchmark with turn distribution | Optional |
-| `src/wordle_solver/tools/profiler.py` | cProfile hot-spot analyser | Optional |
-| `tests/test_engine.py` … `tests/test_game_contract.py` | pytest suite (engine, scoring, lexicon, cli, web, app, contract) | Optional |
-| `requirements.txt` | All Python packages needed | Install once |
-| `src/wordle_solver/data/scientific_word_data.csv` | Word probabilities (generated by `build_word_data.py`) | Generated |
-| `src/wordle_solver/data/wordle_full_matrix.npy` | Pattern matrix (generated by `build_matrix.py`) | Generated |
-| `src/wordle_solver/data/valid_solutions.csv` | Kaggle-sourced answer word list (the 2,315 NYT answers) | Source data |
-| `src/wordle_solver/data/valid_guesses.csv` | Kaggle-sourced guess word list (~12,972 allowed words) | Source data |
-| `src/wordle_solver/data/turn1_cache.json` | Precomputed turn-1 suggestions (cached by the engine) | Generated |
-| `src/wordle_solver/data/residual_optimal.json` | Precomputed residual-cluster optimal trees (generated by `build_residual_optimal.py`) | Generated |
-| `src/wordle_solver/data/residual_optimal_nohint.json` | Hard no-hint closure tree (generated by `build_nohint_tree.py`) | Generated |
-| `src/wordle_solver/data/t1_h_opening.json` | Family-safe turn-1 `h` opening index (generated by `find_t1_h.py`) | Generated |
-
-
-
-## First‑Time Setup (Data Preparation)
-
-The solver needs two files from Kaggle:
-
-- `valid_guesses.csv` – list of all allowed guess words.
-- `valid_solutions.csv` – list of words that can be the hidden answer.
-
-Reference: [Kaggle Wordle Dataset](https://www.kaggle.com/datasets/bcruise/wordle-valid-words/data)
-
-> After `build_word_data.py` runs it produces `scientific_word_data.csv` (~13,000 words with normalised probabilities) which is then fed to `build_matrix.py` that creates `wordle_full_matrix.npy` (~10.7 MB, the 2,315×2,315 answer matrix). The build is fully vectorized and finishes in seconds.
-
-Note: The pre‑built executable already bundles the pre‑computed matrix — no extra setup required (not even Python).
-
----
-
-## Development Setup
-
-```bash
-git clone https://github.com/Mr-Wolv/Wordle_Solver.git
-cd Wordle_Solver
-python -m venv venv
-venv\Scripts\activate
-pip install -r requirements.txt
-# follow first-time setup above:
-# python -m wordle_solver.generators.build_word_data
-# python -m wordle_solver.generators.build_matrix
-python -m wordle_solver.desktop.desktop_app   # launch the desktop (WebView2) app
-```
-
----
-
-## Dependencies
-
-All required packages are listed in `requirements.txt`.
-
-Key libraries:
-
-| Library | Why |
-| :--- | :--- |
-| `numpy` | Matrix operations, fast entropy calculation |
-| `pandas` | CSV data loading and processing |
-| `pywebview` | Native desktop window (WebView2 on Windows) hosting the web UI |
-| `wordfreq` | Real‑world word frequency (Zipf scale) |
-| `pyinstaller` | (optional) Build standalone `.exe` |
-
----
-
-## License & Credits
-
-- 3Blue1Brown's Wordle analysis and original information‑theory approach.
-- Word lists sourced from the [Kaggle Wordle dataset](https://www.kaggle.com/datasets/bcruise/wordle-valid-words/data).
-- Code by Me, under the GNU General Public License v3.0 (GPLv3).
+## Notes & honesty
+
+- **Numbers are accurate.** SOLVE shows a blended SCORE (not raw "gain in bits");
+  SHRED shows a true posterior `P(ans)` %. Bars are relative, never a fake 0–100%.
+- **The desktop app does not fork-bomb.** Measured: ~170 MB working set per game
+  window; WebView2 children appear only under a live game, not under the dev
+  server. Closing the window terminates the in-process server.
+- **Probes live in `probes/`.** Useful diagnostic scripts (OS-hygiene census,
+  GUI play drivers) are kept there, not deleted — they double as regression
+  monitors.

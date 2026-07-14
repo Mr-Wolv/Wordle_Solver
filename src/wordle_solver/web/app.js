@@ -238,9 +238,9 @@ class App {
     const locked = !!st.mode_locked;
     const hard = this.$("hard");
     hard.disabled = locked;
-    hard.checked = st.hard;
     this.$("hard-toggle").classList.toggle("locked", locked);
     this.$("hint-letter").disabled = locked;
+    this.$("hint-block").classList.toggle("locked", locked);
 
     // Specialist note: when hard+hints force a single optimal line, the SOLVE
     // list legitimately has one entry — say so, so it doesn't look like a bug.
@@ -258,6 +258,7 @@ class App {
     this._renderBoard();
     this._renderSuggestions("solve-list", st.strat, "score");
     this._renderSuggestions("shred-list", st.cands, "winp");
+    this._renderPool(st);
   }
 
   async toggleHard(on) {
@@ -269,6 +270,8 @@ class App {
       this.entryColors = [0, 0, 0, 0, 0];
       this.solved = false;
       this.typed = "";
+      this._locked = false;
+      this.$("hard").checked = st.hard;
       this.$("hint-letter").value = "";
       this._renderBoard();
       this._renderState(st);
@@ -285,23 +288,68 @@ class App {
   _renderSuggestions(elId, list, kind) {
     const ol = this.$(elId);
     ol.innerHTML = "";
+    if (!list.length) return;
+    // Accurate numbers:
+    //  - SOLVE ("score"): blended info-gain + win-probability from the
+    //    engine (higher = better next guess). We show the raw value and a bar
+    //    normalized to the TOP score in this list (true relative strength,
+    //    never a bogus 0–100% that can exceed 100).
+    //  - SHRED ("winp"): true posterior P(this word is the answer), 0–100%.
+    const top = Math.max(...list.map(d => kind === "score" ? (d.score ?? 0) : (d.win_prob ?? 0)));
     list.forEach((d, i) => {
       const li = document.createElement("li");
       li.className = "sugg" + (i === 0 ? " top" : "");
       const word = (d.word || "").toUpperCase();
-      const metric = kind === "score"
+      const val = kind === "score"
         ? (d.score ?? 0).toFixed(2)
         : ((d.win_prob ?? 0) * 100).toFixed(1) + "%";
-      const pct = kind === "score"
-        ? Math.min(100, (d.score ?? 0) * 100)
-        : (d.win_prob ?? 0) * 100;
+      const raw = kind === "score" ? (d.score ?? 0) : (d.win_prob ?? 0);
+      const pct = top > 0 ? Math.max(4, (raw / top) * 100) : 4;
       li.innerHTML =
         `<span class="rank">${i + 1}</span>` +
         `<span class="word">${word}</span>` +
-        `<span class="track"><span class="bar" style="width:${Math.max(4, pct).toFixed(0)}%"></span></span>` +
-        `<span class="metric">${metric}</span>`;
+        `<span class="track"><span class="bar" style="width:${pct.toFixed(0)}%"></span></span>` +
+        `<span class="metric">${val}</span>`;
       ol.appendChild(li);
     });
+  }
+
+  // Full candidate pool: every remaining possible answer, clickable to load as
+  // your next guess. The solver recommends; the human is free to pick any.
+  _renderPool(st) {
+    const grid = this.$("pool-list");
+    const more = this.$("pool-more");
+    const count = this.$("pool-count");
+    if (!grid) return;
+    const pool = st.full_pool || [];
+    const total = st.pool_total || pool.length;
+    count.textContent = total + (total === 1 ? " word left" : " words left");
+    grid.innerHTML = "";
+    pool.forEach((w) => {
+      const b = document.createElement("button");
+      b.type = "button";
+      b.className = "pool-word";
+      b.textContent = w.toUpperCase();
+      b.title = "Load " + w.toUpperCase() + " as your guess";
+      b.addEventListener("click", () => this._loadGuess(w));
+      grid.appendChild(b);
+    });
+    if (total > pool.length) {
+      more.classList.remove("hidden");
+      more.textContent = "…and " + (total - pool.length) + " more";
+    } else {
+      more.classList.add("hidden");
+    }
+  }
+
+  // Load a word into the active entry row (used by the POOL card). Only works
+  // before the game is over / while a move is legal.
+  _loadGuess(word) {
+    if (this.busy || this.solved) return;
+    if (this.history.length >= 6) return;
+    this.typed = word.toUpperCase().slice(0, 5);
+    this.entryColors = [0, 0, 0, 0, 0];
+    this._renderBoard();
   }
 
   // ── actions ────────────────────────────────────────────────
@@ -327,6 +375,7 @@ class App {
     const intel = this.$("card-intel");
     if (intel) intel.classList.add("calculating");  // reassure: engine is solving, not frozen
     try {
+      const wasLocked = this.solved || this._locked || false;
       const st = await this._post("/api/submit", { guess, colors: this.entryColors.slice() });
       this.history.push({ guess, colors: this.entryColors.slice() });
       this.entryColors = [0, 0, 0, 0, 0];
@@ -335,6 +384,16 @@ class App {
       this._renderState(st);
       this.clearAlert();
       if (st.solved) this.alert("SUCCESS", "Solved!", `${guess} in ${st.turn} — nice.`);
+      // Loud announce the moment the domain locks (after turn-1 submit).
+      else if (st.mode_locked && !wasLocked) {
+        this._locked = true;
+        const mode = st.hard ? "HARD" : "NORMAL";
+        const hintTxt = st.hinted && st.hinted.length
+          ? ` · ${st.hinted.length} hint${st.hinted.length > 1 ? "s" : ""} (${st.hinted.join("").toUpperCase()})`
+          : " · 0 hints";
+        this.alert("INFO", "DOMAIN LOCKED",
+          `${mode}${hintTxt} — locked for this game. Mode/hints can't change now.`);
+      }
     } catch (err) {
       // Row stays editable on any failure so the user can fix colors/word.
       this.alertErr(err);
@@ -356,8 +415,19 @@ class App {
       el.value = "";
       this._renderState(st);
       this.clearAlert();
-      this.alert("SUCCESS", "Hint logged",
-        `${letter} recorded — hint state: ${st.hint_remaining}.`);
+      // Loud, clear announcement — a normal user must SEE that the hint
+      // registered and how many are left (or that the domain locked).
+      const budget = st.hint_budget || 0;
+      const taken = (st.hinted || []).length;
+      const remain = st.hint_remaining || "";
+      if (st.mode_locked) {
+        const mode = st.hard ? "HARD" : "NORMAL";
+        this.alert("INFO", "HINT LOCKED",
+          `${letter} recorded (${taken}/${budget}). Domain is now ${mode} · ${taken} hint${taken > 1 ? "s" : ""} — locked for this game.`);
+      } else {
+        this.alert("SUCCESS", "HINT LOGGED",
+          `${letter} recorded — ${taken} of ${budget} logged. ${remain !== "complete" ? remain + " left." : "All hints in. Domain will lock after turn 1."}`);
+      }
     } catch (err) {
       this.alertErr(err);
     }
@@ -370,6 +440,7 @@ class App {
       this.entryColors = [0, 0, 0, 0, 0];
       this.solved = false;
       this.typed = "";
+      this._locked = false;
       this.$("hint-letter").value = "";
       this._renderBoard();
       this._renderState(st);
