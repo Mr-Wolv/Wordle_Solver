@@ -7,129 +7,168 @@
   <link rel="stylesheet" href="/styles.css" />
 </head>
 <body>
-  <main class="app" id="app">
-    <!-- HEADER -->
-    <header class="topbar" role="banner">
-      <div class="brand">
-        <span class="brand-mark">◆</span>
-        <span class="brand-name">WORDLE <b>STRAT-CONSOLE</b></span>
-      </div>
-      <div class="chips" role="status" aria-live="polite">
-        <span class="chip" id="chip-pool"><b id="chip-pool-n">2315</b> POOL</span>
-        <span class="chip" id="chip-turn">TURN <b id="chip-turn-n">1</b></span>
-        <span class="chip" id="chip-mode">NORMAL</span>
-      </div>
-    </header>
+  <!-- BOOT SPLASH (in-page overlay, NOT a navigation): covers the game until
+       the backend reports ready. Because it is part of index.html and shown
+       via CSS, there is never a second page to swipe/back into — that kills
+       the "splash is a chrome tab" bug at the root. -->
+  <div id="splash" class="overlay" role="status" aria-live="polite">
+    <div class="ov-card">
+      <div class="ov-mark">◆</div>
+      <div class="ov-title">WORDLE <b>STRAT-CONSOLE</b></div>
+      <div class="ov-spin"></div>
+      <div class="ov-status" id="splash-status">Loading the solver…</div>
+    </div>
+  </div>
 
-    <!-- LOUD ALERT BAR: input/logic errors + success/info, never silent -->
+  <!-- CLOSING overlay (in-page, shown via window.__showClosing). Replaces the
+       old load_html() closing screen, so closing is also not a navigation and
+       cannot be swiped back to. -->
+  <div id="closing" class="overlay hidden" role="status">
+    <div class="ov-card">
+      <div class="ov-mark">◆</div>
+      <div class="ov-title">WORDLE <b>STRAT-CONSOLE</b></div>
+      <div class="ov-spin"></div>
+      <div class="ov-status">Shutting down…</div>
+    </div>
+  </div>
+
+  <div class="app-frame">
+
+    <!-- LOUD ALERT BAR: never silent on input/logic/success/info -->
     <div id="alert" class="alert hidden" role="alert" aria-live="assertive"></div>
 
-    <div class="grid">
-      <!-- BOARD -->
-      <section class="card" id="card-board" aria-label="Game board">
-        <div class="card-head">
-          <h2>GAME BOARD</h2>
-        </div>
-        <div id="banner" class="banner hidden" role="alert">SOLVED ✓</div>
-        <div id="board" class="board" data-rows="6" data-cols="5"></div>
-        <div class="legend">
-          <span class="legend-item"><i class="swatch green"></i>in place</span>
-          <span class="legend-item"><i class="swatch yellow"></i>present</span>
-          <span class="legend-item"><i class="swatch grey"></i>absent</span>
-        </div>
-        <!-- On-screen keyboard: letters + ENTER (submit) + DELETE (backspace) -->
-        <div id="keyboard" class="keyboard" aria-label="On-screen keyboard"></div>
-      </section>
-
-      <!-- COMMAND / HOW TO PLAY -->
-      <section class="card" id="card-command" aria-label="How to play">
-        <div class="card-head"><h2>HOW TO PLAY</h2></div>
-
-        <label class="hard-toggle" id="hard-toggle">
-          <input type="checkbox" id="hard" /> <span class="hard-label">HARD MODE</span>
-          <span class="hard-lock" aria-hidden="true">✕ locked</span>
-        </label>
-
-        <ol class="howto">
-          <li><b>Type your guess.</b> Just press the letter keys — no box to click. The word appears on the board's active row (max 5 letters). Or click any word in the <b>POOL</b> card to load it.</li>
-          <li><b>Fix a tile's color.</b> After you type, click each tile on the active row to cycle it <i class="sw grey"></i> absent → <i class="sw yellow"></i> present → <i class="sw green"></i> correct — matching the colors from your real Wordle.</li>
-          <li><b>Submit.</b> Press <kbd>Enter</kbd> or the on-screen <b>ENTER</b> key. The board's <b>SOLVE</b> list is your optimal next word — but you're free to play any word from <b>POOL</b>; a different pick may even solve faster.</li>
-          <li><b>Delete.</b> Press <kbd>Backspace</kbd> or the on-screen <b>DELETE</b> key to remove the last letter typed.</li>
-          <li><b>NYT hint (optional).</b> Type one consonant + one vowel in the hint box and log them. It's an official Wordle mechanic — not required. The solver already closes <b>100%</b> with no hints; hints can shave a turn.</li>
-          <li><b>Mode &amp; lock.</b> Toggle <b>HARD MODE</b> any time before your first guess. Once you submit turn 1, the mode + hints <b>lock</b> (you'll see a "DOMAIN LOCKED" notice) for the rest of the game.</li>
-          <li><b>Done?</b> Use <b>SYSTEM RESET</b> for a new puzzle. <b>EXIT APP</b> quits.</li>
-        </ol>
-
-        <div class="hint-block" id="hint-block">
-          <label class="hint-label" for="hint-letter">NYT HINT LETTER <span class="hint-opt">— optional</span></label>
-          <div class="hint-row">
-            <input id="hint-letter" class="hint-input" type="text" maxlength="1"
-                   autocomplete="off" placeholder="A–Z" />
-            <button id="hint-btn" class="btn btn-accent">LOG HINT</button>
-            <span class="hint-lock" id="hint-lock" aria-hidden="true">✕ locked</span>
-          </div>
-          <div id="hint-status" class="hint-status"></div>
-          <p class="hint-note">Official Wordle mechanic — not required. The solver
-            already closes 100% with no hints; a hint can shave a turn.</p>
-        </div>
-
-        <div class="cmd-actions">
-          <button id="reset" class="btn btn-ghost">SYSTEM RESET</button>
-          <button id="exit" class="btn btn-ghost">EXIT APP</button>
-        </div>
-      </section>
-
-      <!-- INTEL -->
-      <section class="card" id="card-intel" aria-label="Suggestions">
-        <div class="card-head"><h2>STRATEGY</h2></div>
-        <!-- Calculating overlay: shown while the engine solves a hard cluster
-             (exact minimax can take a few seconds on pathological pools). It
-             reassures the user the app is WORKING, not frozen. Toggled by the
-             `.calculating` class on this card (see app.js submitMove). -->
-        <div id="calc-overlay" class="calc-overlay" aria-live="assertive" aria-hidden="true">
-          <div class="calc-spinner" aria-hidden="true"></div>
-          <div class="calc-text">CALCULATING OPTIMAL MOVE<span class="calc-dots"><i>.</i><i>.</i><i>.</i></span></div>
-          <div class="calc-sub">solving the toughest clusters exactly — a few seconds, tops</div>
-        </div>
-        <div class="intel-col">
-          <h3 class="intel-title">SOLVE <span class="intel-sub">— play one of these</span></h3>
-          <div class="col-head">
-            <span class="col-word">WORD</span>
-            <span class="col-gain" title="SCORE = blended info-gain + win-probability (higher = better next guess)">SCORE ▾</span>
-          </div>
-          <div id="solve-note" class="solve-note hidden"></div>
-          <ol id="solve-list" class="sugg-list"></ol>
-        </div>
-        <div class="intel-col">
-          <h3 class="intel-title">SHRED <span class="intel-sub">— worst-case splitters</span></h3>
-          <div class="col-head">
-            <span class="col-word">WORD</span>
-            <span class="col-prob" title="P(ans) = chance this word is the actual answer (posterior)">P(ans) ▾</span>
-          </div>
-          <ol id="shred-list" class="sugg-list"></ol>
-        </div>
-      </section>
-
-      <!-- POOL: the FULL remaining candidate list. The solver recommends
-           (SOLVE/SHRED); you are free to play ANY word here. Deviating from
-           the optimal suggestion may even solve faster — your call. -->
-      <section class="card" id="card-pool" aria-label="Candidate pool">
-        <div class="card-head">
-          <h2>POOL</h2>
-          <span class="pool-count" id="pool-count">0</span>
-        </div>
-        <p class="pool-note">Every remaining possible answer. Click any word to load it as
-          your guess — the solver suggests, <b>you decide</b>. Playing a word
-          other than the top suggestion is fine; you just carry the turn cost.</p>
-        <div id="pool-list" class="pool-grid" aria-live="polite"></div>
-        <div id="pool-more" class="pool-more hidden"></div>
-      </section>
+    <!-- STATUS STRIP: live pool/turn/mode readouts (single source of truth;
+         _renderState updates these). Kept out of the dashboard cards so the
+         numbers can't be duplicated or hidden by card layout. -->
+    <div class="status-strip" role="status" aria-live="polite">
+      <span class="brand">WORDLE <b>STRAT-CONSOLE</b></span>
+      <span class="strip-spacer"></span>
+      <span class="chip" id="chip-pool"><b id="chip-pool-n">—</b> LEFT</span>
+      <span class="chip" id="chip-turn">TURN <b id="chip-turn-n">—</b></span>
+      <span class="chip" id="chip-mode">NORMAL</span>
     </div>
 
-    <footer class="footer">
-      <span>engine: greedy + residual specialist · 2315 answers</span>
-    </footer>
-  </main>
+    <!-- DASHBOARD: board is the hero (center). POOL left (searchable,
+         collapsible — not a 2,315-button wall). CONTROLS right (no dup). -->
+    <div class="dash">
+
+      <!-- LEFT RAIL: engine intelligence (top) + full POOL (bottom, half) -->
+      <aside class="rail rail-left">
+        <section class="card card-glass card-intel-rail" id="card-intel" aria-label="Suggestions">
+          <div class="strat-head">
+            <h3 class="intel-title">SOLVE <span class="intel-sub">— play one of these</span></h3>
+            <span class="strat-divider"></span>
+            <h3 class="intel-title">SHRED <span class="intel-sub">— most likely answers</span></h3>
+          </div>
+          <div id="calc-overlay" class="calc-overlay" aria-live="assertive" aria-hidden="true">
+            <div class="calc-spinner"></div>
+            <div class="calc-text">CALCULATING OPTIMAL MOVE<span class="calc-dots"><i>.</i><i>.</i><i>.</i></span></div>
+          </div>
+          <div class="strat-cols">
+            <div class="intel-col">
+              <div class="col-head">
+                <span class="col-word">WORD</span>
+                <span class="col-gain" title="SCORE = blended info-gain + win-probability">SCORE ▾</span>
+              </div>
+              <div id="solve-note" class="solve-note hidden"></div>
+              <ol id="solve-list" class="sugg-list"></ol>
+            </div>
+            <div class="intel-col">
+              <div class="col-head">
+                <span class="col-word">WORD</span>
+                <span class="col-prob" title="P(ans) = posterior chance this is the answer">P(ans) ▾</span>
+              </div>
+              <ol id="shred-list" class="sugg-list"></ol>
+            </div>
+          </div>
+        </section>
+
+        <section class="card card-glass card-pool-rail" id="card-pool" aria-label="Candidate pool">
+          <div class="card-head"><h2>POOL</h2></div>
+          <input id="pool-filter" class="pool-filter" type="text"
+                 autocomplete="off" spellcheck="false" placeholder="search · e.g. a___e or cr" />
+          <div class="pool-readout" id="pool-count">0</div>
+          <div id="pool-list" class="pool-grid" aria-live="polite"></div>
+          <div id="pool-more" class="pool-more hidden"></div>
+        </section>
+      </aside>
+
+      <!-- CENTER: PLAY — board + strategy in ONE seamless card (hero) -->
+      <main class="rail rail-center">
+        <section class="card card-play" id="card-board" aria-label="Game">
+          <div id="banner" class="banner hidden" role="alert">SOLVED ✓</div>
+
+          <div class="play-head">
+            <h2 class="play-title">YOUR MOVE</h2>
+            <span class="play-sub" id="play-sub">type a guess · click tiles to set colors</span>
+          </div>
+
+          <div id="board" class="board" data-rows="6" data-cols="5"></div>
+
+          <div class="legend">
+            <span class="legend-item"><i class="swatch green"></i>in place</span>
+            <span class="legend-item"><i class="swatch yellow"></i>present</span>
+            <span class="legend-item"><i class="swatch grey"></i>absent</span>
+          </div>
+
+          <!-- On-screen keyboard: mirrors the real game (tap to type). ENTER/DELETE live here. -->
+          <div id="keyboard" class="keyboard" aria-label="On-screen keyboard"></div>
+        </section>
+      </main>
+
+      <!-- RIGHT: HOW TO PLAY (top) + CONTROLS (bottom) -->
+      <aside class="rail rail-right">
+        <section class="card card-glass card-help" id="card-howto" aria-label="Help">
+          <details open>
+            <summary><h2>HOW TO PLAY</h2></summary>
+            <div class="howto-body">
+              <p class="howto-lead">This is a <b>strategy assistant</b> for the real Wordle. You play Wordle as usual in your browser; this app tells you the <b>smartest next guess</b> and lets you enter the result. It never plays for you — <b>you decide</b> every word.</p>
+              <ol class="howto">
+                <li><b>The goal:</b> guess the hidden 5-letter word in 6 tries. After each guess, Wordle colors the tiles: <span class="swatch green"></span> correct letter &amp; spot, <span class="swatch yellow"></span> correct letter, wrong spot, <span class="swatch grey"></span> not in the word.</li>
+                <li><b>Read the three columns:</b> <b>SOLVE</b> lists the best next guesses (ranked by info gain + win chance); <b>SHRED</b> lists the remaining answers with the <i>highest</i> chance of being the secret (its <code>P(ans)</code> posterior — the most likely words still in play). <b>POOL</b> (bottom-left) is every word still possible.</li>
+                <li><b>Enter your guess:</b> type on your keyboard or click a word in <b>SOLVE</b> / <b>SHRED</b> to drop it onto the board. Then press <kbd>Enter</kbd> (or the green ENTER) to submit.</li>
+                <li><b>Report the colors:</b> click each tile on the active row to cycle <span class="swatch grey"></span> absent → <span class="swatch yellow"></span> present → <span class="swatch green"></span> correct, matching what Wordle showed you. The candidate pool shrinks automatically.</li>
+                <li><b>Repeat</b> until solved (the board shows <b>SOLVED ✓</b>) or you run out of rows. Hit <b>SYSTEM RESET</b> any time to start a fresh game.</li>
+                <li><b>HARD MODE</b> (optional): forces every guess to use letters already confirmed present — the real Wordle hard rule. It locks on after turn 1.</li>
+                <li><b>NYT HINT</b> (optional): reveals a letter the answer contains — 0, 1, or 2 hints, your call (mode locks after turn 1). <b>0 hints:</b> pure deduction (already closes 100%). <b>1 hint:</b> any single letter you pick. <b>2 hints:</b> the NYT rule forces exactly <b>one vowel + one consonant</b> — it will never accept two of the same class, so a 2-hint game always has a known vowel and a known consonant. Note: once a hint is taken it can only narrow; some words simply have no second qualifying letter to reveal, which is why 0/1 are valid choices too. Not required — a hint can just shave a turn.</li>
+                <li><b>Search POOL:</b> type letters to filter the candidate list (matches are highlighted).<br>
+                  • plain letters (any count) → words containing <b>all</b> those letters, <b>any order</b>: <code>cr</code> finds CRATE, TRACE, RANCH (each has C and R).<br>
+                  • <code>_</code> = wildcard → <b>positional</b> pattern: <code>a___e</code> matches A_C_E; <code>a____</code> matches words starting with A.<br>
+                  POOL is <b>read-only reference</b> — it highlights matches but never loads a guess; loading happens from SOLVE / SHRED.</li>
+              </ol>
+            </div>
+          </details>
+        </section>
+
+        <section class="card card-glass" id="card-command" aria-label="Controls">
+          <div class="card-head"><h2>CONTROLS</h2></div>
+
+          <label class="hard-toggle" id="hard-toggle">
+            <input type="checkbox" id="hard" /> <span class="hard-label">HARD MODE</span>
+            <span class="hard-lock" aria-hidden="true">✕ locked</span>
+          </label>
+
+          <div class="hint-block" id="hint-block">
+            <label class="hint-label" for="hint-letter">NYT HINT <span class="hint-opt">— optional</span></label>
+            <div class="hint-row">
+              <input id="hint-letter" class="hint-input" type="text" maxlength="1"
+                     autocomplete="off" placeholder="A–Z" />
+              <button id="hint-btn" class="btn btn-accent">LOG HINT</button>
+              <span class="hint-lock" id="hint-lock" aria-hidden="true">✕ locked</span>
+            </div>
+            <div id="hint-status" class="hint-status"></div>
+            <p class="hint-note">Official mechanic — not required. No-hint already
+              closes 100%; a hint can shave a turn.</p>
+          </div>
+
+          <div class="cmd-actions">
+            <button id="reset" class="btn btn-ghost">SYSTEM RESET</button>
+          </div>
+        </section>
+      </aside>
+
+    </div>
+  </div>
 
   <script src="/app.js"></script>
 </body>

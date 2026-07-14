@@ -179,15 +179,12 @@ def main() -> int:
 
     threading.Thread(target=_watchdog, daemon=True).start()
 
-    # Speed up first real move by warming the per-instance cache, and keep
-    # the splash status channel live (the desktop splash polls /api/load-status).
-    web_server.set_load_status("Loading word matrix…")
+    # Speed up first real move by warming the per-instance cache.
     try:
         web_server.engine.get_suggestions()
         web_server.engine.get_suggestions(is_hard_mode=True)
     except Exception:
         pass
-    web_server.set_load_status("Ready")
 
     def _bye() -> None:
         print(f"[dev-server] stopped — port :{port} is free again.", flush=True)

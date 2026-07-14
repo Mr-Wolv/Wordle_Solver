@@ -1,9 +1,9 @@
 """Headless regression tests for the desktop-app boot/close contract.
 
 These cover the behaviours most likely to silently regress when someone
-touches desktop_app.py / Engine.py / splash.html, WITHOUT needing a browser
-(the Playwright e2e suite in test_e2e_web.py covers the live DOM; it is
-skipped when no browser is installed — see conftest.py).
+touches desktop_app.py / the engine / the web frontend, WITHOUT needing a
+browser (the Playwright e2e suite in test_e2e_web.py covers the live DOM; it
+is skipped when no browser is installed — see conftest.py).
 
 Run:  python -m pytest test_app_contract.py -q
 """
@@ -32,8 +32,10 @@ def _load(path: str, modname: str):
 desktop = _load(os.path.join("src", "wordle_solver", "desktop", "desktop_app.py"), "desktop_app_test")
 with open(os.path.join(REPO_ROOT, "src", "wordle_solver", "desktop", "desktop_app.py"), encoding="utf-8") as fh:
     DA_SRC = fh.read()
-with open(os.path.join(REPO_ROOT, "src", "wordle_solver", "assets", "splash.html"), encoding="utf-8") as fh:
-    SPLASH_SRC = fh.read()
+with open(os.path.join(REPO_ROOT, "src", "wordle_solver", "web", "index.html"), encoding="utf-8") as fh:
+    INDEX_SRC = fh.read()
+with open(os.path.join(REPO_ROOT, "src", "wordle_solver", "web", "app.js"), encoding="utf-8") as fh:
+    APPJS_SRC = fh.read()
 # desktop_app.spec is a build artifact (*.spec is gitignored) and may be absent
 # from a clean checkout — only load it when present.
 _SPEC_PATH = os.path.join(REPO_ROOT, "src", "wordle_solver", "desktop", "desktop_app.spec")
@@ -43,35 +45,38 @@ if os.path.exists(_SPEC_PATH):
         SPEC_SRC = fh.read()
 
 
-# ── OPEN: splash opens instantly via a #fragment, never a ?query ────────────
-def test_open_splash_uses_hash_not_query():
-    # file:// URIs have no ?query support; a ? would make WebView2 look for a
-    # file literally named splash.html?port=… and report "file not found".
-    assert 'file_uri(assets_path("splash.html")) + f"#port={initial_port}"' in DA_SRC
-    assert re.search(r'file_uri\([^)]*\) \+ f"\?', DA_SRC) is None
+# ── OPEN: boot splash is an IN-PAGE overlay, dismissed by JS (no file/route) ──
+def test_open_has_inpage_splash_overlay():
+    # The boot splash is part of index.html (id="splash"), shown by default and
+    # hidden by app.js once the UI is live — there is no second page/route to
+    # swipe or navigate to (kills the old "splash is a chrome tab" bug).
+    assert 'id="splash"' in INDEX_SRC
+    assert 'id="closing"' in INDEX_SRC
+    # app.js hides the splash (no dependence on a non-existent /api/load-status).
+    assert "_hideSplash" in APPJS_SRC
+    assert "this._hideSplash()" in APPJS_SRC
 
 
-def test_splash_reads_hash_not_search():
-    assert "location.search" not in SPLASH_SRC
-    assert "location.hash" in SPLASH_SRC
-    assert "closing" in SPLASH_SRC
-
-
-# ── CLOSE: graceful, no hard-kill ───────────────────────────────────────────
+# ── CLOSE: graceful, in-page overlay, no hard-kill ──────────────────────────
 def test_close_is_graceful_no_hardkill():
     # The close path must not os._exit(0) — it must paint then destroy.
     region = DA_SRC[DA_SRC.find("def close_with_splash"):DA_SRC.find("# ── window + lifecycle")]
-    # Only a real CALL (os._exit() — note the parenthesis) counts; the
-    # docstring legitimately contains the words "no os._exit hard-kill".
+    # Only a real CALL (os._exit( — note the parenthesis) counts; the docstring
+    # legitimately contains the words "no os._exit hard-kill".
     assert "os._exit(" not in region
-    assert "window.load_html" in DA_SRC
+    # Close uses the in-page closing overlay, NOT a navigation/load_html.
+    assert "window.__showClosing" in DA_SRC
     assert "window.destroy()" in DA_SRC
+    # The teardown runs on the GUI thread via the deferred request_close hook.
+    assert "request_close" in DA_SRC
 
 
 def test_close_with_splash_paints_inline_screen():
     region = DA_SRC[DA_SRC.find("def close_with_splash"):DA_SRC.find("# ── window + lifecycle")]
-    assert "Shutting down" in region
-    assert "load_html" in region
+    # The closing overlay is painted via the in-page __showClosing hook (not a
+    # chrome navigation that would re-enable swipe-back).
+    assert "window.__showClosing" in region
+    assert "load_html" not in region
 
 
 # ── BUILD: one-folder (no 65 MB unpack hang) ───────────────────────────────
@@ -153,39 +158,6 @@ def test_engine_turn1_cache_is_per_instance_and_deterministic():
     s2b, _ = e2.get_suggestions()
     assert [d["word"] for d in s2b] == [d["word"] for d in s2]
     assert "e" in s1h[0]["word"]
-
-
-def test_engine_cache_is_per_instance_and_atomic():
-    """Atomic write + per-instance isolation for any engine-owned on-disk
-    artifact path (verifies the ``tempfile + os.replace`` pattern the
-    desktop app uses to avoid half-written files and cross-instance clobber).
-    """
-    import tempfile
-    import json
-
-    base = tempfile.mkdtemp(prefix="hermes-contract-")
-    try:
-        class Stub:
-            _port = 8753
-
-            def _artifact_path(self):
-                return os.path.join(base, f"turn1_cache.{self._port}.json")
-
-        s = Stub()
-        assert s._artifact_path().endswith("turn1_cache.8753.json")
-        data = {"normal": [{"word": "stare", "score": 1.0, "win_prob": 0.5,
-                             "is_candidate": True}], "hard": None}
-        tmp = s._artifact_path() + ".tmp"
-        with open(tmp, "w") as f:
-            json.dump(data, f)
-        os.replace(tmp, s._artifact_path())
-        assert os.path.exists(s._artifact_path()) and not os.path.exists(tmp)
-        with open(s._artifact_path()) as f:
-            assert json.load(f) == data
-    finally:
-        for f in os.listdir(base):
-            os.remove(os.path.join(base, f))
-        os.rmdir(base)
 
 
 def test_find_free_port_skips_in_use():

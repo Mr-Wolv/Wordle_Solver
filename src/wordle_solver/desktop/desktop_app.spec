@@ -30,9 +30,10 @@ datas = [
     # bundle. Do not add one here or the build breaks on a clean checkout.
     (os.path.join(DATA, "residual_optimal.json"), "data"),
     (os.path.join(DATA, "residual_optimal_nohint.json"), "data"),
+    (os.path.join(DATA, "residual_optimal_1hint.json"), "data"),
+    (os.path.join(DATA, "residual_optimal_2hint.json"), "data"),
     (os.path.join(DATA, "t1_h_opening.json"), "data"),
     (os.path.join(ASSETS, "icon.ico"), "assets"),
-    (os.path.join(ASSETS, "splash.html"), "assets"),
 ]
 
 a = Analysis(

@@ -15,10 +15,25 @@ weights every legal next guess by how much it shrinks the remaining answer pool
 decide. Because sometimes a human picks a different word, and that's fine: you
 carry the turn cost, and you might even solve faster.
 
-It is also **exhaustively correct**. We replayed all **47,814** games —
-`2,315 answers × 6 domains` — through the real solver engine and the real
-feedback loop. **Zero failures. Worst case 6 turns.** That is not a claim we
-take on faith; it is a recomputed proof (see [Verification](#verification)).
+It is also **exhaustively correct**. We replayed all **47,814** games through
+the real solver engine and the real feedback loop. That total is the sum over
+the six domains of every *hint enumeration* each answer must satisfy — not a
+flat `2,315 × 6`. The no-hint domains contribute one game per answer; the
+hinted domains contribute one game for **every legal NYT hint set** a word
+admits (each single letter for 1-hint; each vowel×consonant pair for 2-hint):
+
+| Domain | Games |
+|--------|-------|
+| `normal_0` | 2,315 |
+| `hard_0`   | 2,315 |
+| `normal_1` | 10,767 |
+| `hard_1`   | 10,767 |
+| `normal_2` | 10,825 |
+| `hard_2`   | 10,825 |
+| **Total**  | **47,814** |
+
+**Zero failures. Worst case 6 turns.** That is not a claim we take on faith;
+it is a recomputed proof (see [Verification](#verification)).
 
 ---
 
@@ -52,28 +67,30 @@ turn — not a requirement.
 
 ## What the UI shows
 
-Three intel panels, plus a clickable full answer pool:
+Three intel panels, plus a searchable full answer pool:
 
 - **STRATEGY → SOLVE** — the top recommended next words, ranked by **SCORE**
   (a blended info-gain + win-probability value; higher = better next guess).
   The bar is normalized to the top word, so it shows *relative* strength.
+  Click a SOLVE row to load that word onto the board.
 - **STRATEGY → SHRED** — the remaining answers with the **highest posterior
-  probability** of being *the* answer (`P(ans)` as a true %), i.e. the words
-  that would be the most punishing to leave in the pool.
-- **POOL** — **every** remaining possible answer (capped at 400 rendered rows
-  with an "and N more" count). **Click any word to load it as your guess.**
-  The solver recommends; you decide. A non-top pick may even solve faster.
+  probability** of being *the* answer (`P(ans)` as a true %), i.e. the most
+  likely secrets still in play. Click a SHRED row to load it as your guess.
+- **POOL** — **every** remaining possible answer (the full live list, no cap),
+  with a live filter box (type letters or a positional pattern like `a___e`).
+  It is a **read-only reference** you can scan and search — loading a guess is
+  done from the SOLVE/SHRED rows or by typing on the board.
 - **Loud banners** — every meaningful state change announces itself:
   `SUCCESS · Solved!`, `INFO · Hard mode ON`, `SUCCESS · HINT LOGGED`,
   `INFO · HINT LOCKED`, `INFO · DOMAIN LOCKED`. No silent state changes.
 
 ### How to play
-1. **Type** your guess (just press letter keys — no box to click). Or click any
-   word in **POOL** to load it.
+1. **Type** your guess (just press letter keys — no box to click). Or click a
+   word in the **SOLVE**/**SHRED** lists to load it onto the board.
 2. **Fix tile colors**: click each tile on the active row to cycle
    grey → yellow → green, matching your real Wordle.
 3. **Submit** with `Enter` (or the on-screen key). The SOLVE list is your optimal
-   word — but any POOL word is legal.
+   word — but any legal word you type is accepted.
 4. **NYT hint (optional)**: type one consonant + one vowel and log them.
 5. **Mode & lock**: toggle HARD any time before turn 1; after that, mode + hints
    lock for the game.
@@ -186,8 +203,8 @@ The project mandates **zero warnings** (`-W error` everywhere).
 - **`test-suite.yml` → `exhaustive-gate` job**: runs the full 47,814-game gate
   **only when the diff touches core engine/game/mode logic** that the six domains
   are built from (`engine/`, `game_mode.py`, `generators/`, `data/`,
-  `app/web_server.py`). Otherwise it is skipped. `workflow_dispatch` always runs
-  it (opt-in full proof).
+  `app/web_server.py`, `app/cli.py`). Otherwise it is skipped. `workflow_dispatch`
+  always runs it (opt-in full proof).
   → The exhaustive gate runs **if and only if** a core change could regress a mode.
 - **`build-exe.yml`**: on a `v*` tag, builds the EXE from committed source, runs
   the frozen-bundle self-play, zips `dist/Wordle-Strat-Console/`, and attaches

@@ -143,7 +143,7 @@ def test_layout_is_real_dom(page):
     assert page.locator("#card-board").count() == 1
     assert page.locator("#card-command").count() == 1
     assert page.locator("#card-intel").count() == 1
-    assert page.get_by_role("heading", name="GAME BOARD").count() == 1
+    assert page.get_by_role("heading", name="YOUR MOVE").count() == 1
     assert page.locator("#keyboard").count() == 1
     assert page.locator("#keyboard .key-action", has_text="ENTER").count() == 1
     assert page.locator("#keyboard .key-action", has_text="DELETE").count() == 1

@@ -1,10 +1,12 @@
 """Self-play verification of the FROZEN one-folder bundle.
 
 Why this exists: the other tests exercise source code, but a frozen PyInstaller
-bundle can still break (missing datas, a bad resource_path, a nohint-tree artifact
-that didn't get bundled). This test launches the actual built exe from its folder
-and drives its HTTP API through hard no-hint self-play on every residual word,
-proving the shipped artifact closes — not just the source.
+bundle can still break (missing datas, a bad resource_path, a specialist-tree
+artifact that didn't get bundled). This test launches the actual built exe from
+its folder and drives its HTTP API through self-play — hard no-hint on every
+residual word AND hinted (1-hint / 2-hint) games — proving the shipped artifact
+closes, and that it actually carries the hint specialist trees, not just the
+source.
 
 It builds the bundle via build_dist.py if it isn't present, so it's self-sufficient.
 The app serves HTTP on a runtime-chosen port; we pin it with WSC_PORT to a free port
@@ -93,6 +95,29 @@ def _play(port, engine, secret) -> int | None:
         if res.get("solved"):
             # The engine reports turn 7 after the 6th submit; the human-visible
             # move number is the count of submits we just made.
+            return turn if 1 <= turn <= 6 else 6
+    return None
+
+
+_VOWELS = set("aeiou")
+
+
+def _play_hinted(port, engine, secret, hint_letters) -> int | None:
+    """Self-play `secret` after logging `hint_letters` (drawn from the secret)
+    before turn 1, so the shipped bundle exercises the 1-hint / 2-hint
+    specialist trees — the artifacts that must be bundled for hinted play to
+    close. Returns the winning turn (1..6) or None on failure."""
+    _api(port, "/api/reset", {})
+    for h in hint_letters:
+        _api(port, "/api/hint", {"letter": h})
+    for turn in range(1, 7):
+        st = _api(port, "/api/state")
+        if st.get("solved"):
+            return st.get("turn", turn)
+        guess = st["strat"][0]["word"]
+        colors = _states_from_pattern(engine.calculate_pattern(guess, secret))
+        res = _api(port, "/api/submit", {"guess": guess, "colors": colors})
+        if res.get("solved"):
             return turn if 1 <= turn <= 6 else 6
     return None
 
@@ -221,4 +246,31 @@ def test_frozen_bundle_solves_all_residuals(running_exe):
         assert turn is not None and 1 <= turn <= 6, (
             f"frozen bundle failed to close residual '{secret}' "
             f"(turn={turn}) within 6 moves"
+        )
+
+
+@pytest.mark.skipif(not _BUILD_OPT_IN,
+                    reason="set WS_BUILD_TEST=1 to run the heavy frozen-bundle build test")
+def test_frozen_bundle_solves_hinted_games(running_exe):
+    """Self-play hinted games through the SHIPPED exe so the bundle proves it
+    carries the 1-hint AND 2-hint specialist trees. Before these artifacts were
+    added to the spec's datas, the loaders silently fell back to {} in the
+    frozen bundle — invisible to the no-hint self-play above. Each secret is
+    played with a hint set drawn from its own letters (NYT rule: <=1 vowel and
+    <=1 consonant)."""
+    from wordle_solver.engine import WordleEngine
+
+    e = WordleEngine()
+    # (secret, hint letters) — a 2-hint (vowel+consonant) and a 1-hint case.
+    cases = [
+        ("hatch", ["a", "h"]),   # 2-hint: vowel 'a' + consonant 'h'
+        ("foyer", ["o"]),        # 1-hint: single vowel
+        ("mound", ["m"]),        # 1-hint: single consonant
+    ]
+    for secret, hints in cases:
+        turn = _play_hinted(running_exe, e, secret, hints)
+        assert turn is not None and 1 <= turn <= 6, (
+            f"frozen bundle failed to close hinted '{secret}' "
+            f"(hints={hints}, turn={turn}) within 6 moves — is the "
+            f"1-hint/2-hint tree bundled?"
         )

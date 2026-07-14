@@ -40,7 +40,6 @@ jobs:
           filters: |
             core:
               - 'src/wordle_solver/engine/**'
-              - 'src/wordle_solver/game_mode.py'
               - 'src/wordle_solver/generators/**'
               - 'src/wordle_solver/data/**'
               - 'src/wordle_solver/app/web_server.py'

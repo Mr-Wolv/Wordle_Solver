@@ -2,9 +2,9 @@
 
 The solver's candidate universe is the set of valid NYT answers (2,315
 words), NOT the full 12,972-word dictionary. We therefore bake a
-*2315 x 2315* integer pattern matrix (≈5.4 MB) indexed by answer, which is
-what scoring actually consumes — 1/31st the size of the old full matrix and
-31x faster to build.
+*2315 x 2315* int16 pattern matrix (≈10.7 MB) indexed by answer, which is
+what scoring actually consumes — 1/31st the cells of the old full
+12,972 x 12,972 matrix and correspondingly faster to build and load.
 
 Guesses outside the answer set (SHRED openers like "roate") are still
 scored correctly: ``PatternMatrix.score`` computes their pattern row on the

@@ -101,7 +101,7 @@ def _state() -> dict:
         engine.set_mode("normal_0")
         strat, cands = engine.get_suggestions(is_hard_mode=False)
         _idx0 = engine.possible_indices.tolist()
-        _words0 = [engine.lex.solution_words[i] for i in _idx0[:400]]
+        _words0 = [engine.lex.solution_words[i] for i in _idx0]
         return {
             "turn": 1, "pool": int(engine.possible_indices.size),
             "hard": False, "mode": "normal_0", "mode_locked": False,
@@ -123,10 +123,11 @@ def _state() -> dict:
     specialist = bool(gm.hard and engine.hinted_letters and len(strat) == 1
                       and pool > 1)
     # Full remaining candidate pool — exposed so the UI can let the human pick
-    # ANY legal answer (the solver recommends; the human decides). Capped at
-    # 400 rendered rows; pool_total carries the true count for "and N more".
+    # ANY legal answer (the solver recommends; the human decides). Sent in full
+    # (≤2,315 words) so the client can search/filter the entire pool; pool_total
+    # carries the true count for the "N matches" readout.
     _idx = engine.possible_indices.tolist()
-    _words = [engine.lex.solution_words[i] for i in _idx[:400]]
+    _words = [engine.lex.solution_words[i] for i in _idx]
     return {
         "turn": gm.turn,  # 1-based: turn 1 = first guess yet to be made
         "pool": pool,
@@ -329,21 +330,6 @@ async def _no_store(request, call_next):
 @app.get("/")
 def index() -> FileResponse:
     return FileResponse(WEB_DIR / "index.html", headers={"Cache-Control": "no-store"})
-
-
-# Boot status channel for the desktop splash: the loader (desktop_app.py)
-# pushes milestone text here; the splash polls it. Defined BEFORE the root
-# StaticFiles mount so the mount can't shadow it.
-_load_status = {"text": "Booting engine…"}
-
-
-@app.get("/api/load-status")
-def load_status():
-    return _load_status
-
-
-def set_load_status(text: str) -> None:
-    _load_status["text"] = text
 
 
 app.mount("/", StaticFiles(directory=WEB_DIR, html=True), name="static")

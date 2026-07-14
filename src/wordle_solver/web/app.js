@@ -62,12 +62,63 @@ class App {
       }
     });
     this.$("hint-btn").addEventListener("click", () => this.logHint());
-    this.$("hint-letter").addEventListener("keydown", (e) => {
-      if (e.key === "Enter") this.logHint();
+    const hintEl = this.$("hint-letter");
+    // Mirror the board's input discipline: only a single A–Z may exist in the
+    // box — anything else (=, digits, symbols) is stripped the instant it is
+    // typed, so LOG never has to reject a bad character.
+    hintEl.addEventListener("input", () => {
+      const cleaned = hintEl.value.toUpperCase().replace(/[^A-Z]/g, "").slice(0, 1);
+      if (hintEl.value !== cleaned) hintEl.value = cleaned;
+    });
+    hintEl.addEventListener("keydown", (e) => {
+      if (e.key === "Enter") { e.preventDefault(); this.logHint(); }
     });
     this.$("reset").addEventListener("click", () => this.reset());
-    this.$("exit").addEventListener("click", () => this.exitApp());
     this.$("hard").addEventListener("change", (e) => this.toggleHard(e.target.checked));
+    // Window min/max/close + drag/resize are the NATIVE OS chrome (we use a
+    // non-frameless pywebview window), so we expose no custom title bar. The
+    // EXIT APP button below calls api.exit_app(), which shows the closing
+    // splash then quits. Slim action buttons (you type on the physical
+    // keyboard; these are mouse affordances only).
+    const enterBtn = this.$("enter");
+    if (enterBtn) enterBtn.addEventListener("click", () => this.submitMove());
+    const delBtn = this.$("delete");
+    if (delBtn) delBtn.addEventListener("click", () => this._deleteLetter());
+    // POOL live filter: narrow the candidate list as you type.
+    const pf = this.$("pool-filter");
+    if (pf) pf.addEventListener("input", () => this._renderPoolFiltered());
+  }
+
+  // Re-render the POOL list filtered by the current filter input.
+  //  - pattern mode (any "_" present): positional regex, e.g. "a___e" → A_C_E,
+  //    "a____" → starts with A. Matches the 5-letter slot exactly.
+  //  - letter mode (only A–Z, no "_"): every typed letter must be present
+  //    ANYWHERE in the word, in ANY ORDER — "cr" matches CRATE, TRACE and RANCH
+  //    (all contain C and R), not just the substring "cr". A single letter
+  //    matches words containing it; the full word confirms it's still a guess.
+  //  - inputs are sanitized: only A–Z and "_" kept, uppercased, capped at 5.
+  //  - matched letters are highlighted; when filtering, ALL matches render
+  //    (no cap) and the count shows "N matches".
+  _renderPoolFiltered() {
+    const pf = this.$("pool-filter");
+    if (!pf || !this._poolAll) return;
+    const q = pf.value.toUpperCase().replace(/[^A-Z_]/g, "").slice(0, 5);
+    if (pf.value !== q) pf.value = q;   // reflect sanitization in the box
+    if (!q) { this._paintPool(this._poolAll, this._poolTotal, null); return; }
+    const isPattern = q.includes("_");
+    let view;
+    if (isPattern) {
+      const re = new RegExp("^" + q.replace(/_/g, ".") + "$");
+      view = this._poolAll.filter((w) => re.test(w.toUpperCase()));
+    } else {
+      // every typed letter must appear (any order / any position)
+      const letters = q.split("");
+      view = this._poolAll.filter((w) => {
+        const up = w.toUpperCase();
+        return letters.every((c) => up.includes(c));
+      });
+    }
+    this._paintPool(view, view.length, q);
   }
 
   // ── entry buffer ───────────────────────────────────────────
@@ -194,8 +245,16 @@ class App {
 
   // ── server calls ──────────────────────────────────────────
   async refresh() {
-    const st = await this._get("/api/state");
-    this._renderState(st);
+    try {
+      const st = await this._get("/api/state");
+      this._renderState(st);
+    } finally {
+      // The boot splash is shown by default (in index.html) and MUST be hidden
+      // as soon as the UI is live — there is no /api/load-status endpoint to
+      // poll, so nothing else ever dismisses it. Hide on both success and
+      // failure so we can never get stuck on "Loading the solver…".
+      this._hideSplash();
+    }
   }
 
   async _get(url) {
@@ -290,60 +349,96 @@ class App {
     ol.innerHTML = "";
     if (!list.length) return;
     // Accurate numbers:
-    //  - SOLVE ("score"): blended info-gain + win-probability from the
-    //    engine (higher = better next guess). We show the raw value and a bar
-    //    normalized to the TOP score in this list (true relative strength,
-    //    never a bogus 0–100% that can exceed 100).
+    //  - SOLVE ("score"): blended info-gain + win-probability from the engine.
     //  - SHRED ("winp"): true posterior P(this word is the answer), 0–100%.
-    const top = Math.max(...list.map(d => kind === "score" ? (d.score ?? 0) : (d.win_prob ?? 0)));
+    // Both columns are click-to-load: tap a word to drop it on the board as
+    // your guess (human's call — solver recommends, you decide).
     list.forEach((d, i) => {
       const li = document.createElement("li");
       li.className = "sugg" + (i === 0 ? " top" : "");
+      li.setAttribute("role", "button");
+      li.tabIndex = 0;
+      li.dataset.word = (d.word || "").toUpperCase();
       const word = (d.word || "").toUpperCase();
       const val = kind === "score"
         ? (d.score ?? 0).toFixed(2)
         : ((d.win_prob ?? 0) * 100).toFixed(1) + "%";
-      const raw = kind === "score" ? (d.score ?? 0) : (d.win_prob ?? 0);
-      const pct = top > 0 ? Math.max(4, (raw / top) * 100) : 4;
       li.innerHTML =
         `<span class="rank">${i + 1}</span>` +
         `<span class="word">${word}</span>` +
-        `<span class="track"><span class="bar" style="width:${pct.toFixed(0)}%"></span></span>` +
         `<span class="metric">${val}</span>`;
+      const load = () => this._loadGuess(word);
+      li.addEventListener("click", load);
+      li.addEventListener("keydown", (e) => {
+        if (e.key === "Enter" || e.key === " ") { e.preventDefault(); load(); }
+      });
       ol.appendChild(li);
     });
   }
 
-  // Full candidate pool: every remaining possible answer, clickable to load as
-  // your next guess. The solver recommends; the human is free to pick any.
+  // Full candidate pool: every remaining possible answer, rendered as a
+  // read-only reference (scan + live-filter). Loading a guess is done from the
+  // SOLVE/SHRED rows or by typing on the board — the pool itself is not clickable.
   _renderPool(st) {
+    if (!this.$("pool-list")) return;
+    // Cache the full set so the live filter can narrow without a re-fetch.
+    this._poolAll = st.full_pool || [];
+    this._poolTotal = st.pool_total || this._poolAll.length;
+    this._paintPool(this._poolAll, this._poolTotal);
+  }
+
+  // Paint the POOL grid from a (possibly filtered) word list.
+  //  - total: authoritative remaining count (unchanged by filtering)
+  //  - q: when set, we're filtering → show ALL matches (no cap), highlight
+  //    matched letters, and the count reads "N matches".
+  _paintPool(pool, total, q) {
     const grid = this.$("pool-list");
     const more = this.$("pool-more");
     const count = this.$("pool-count");
     if (!grid) return;
-    const pool = st.full_pool || [];
-    const total = st.pool_total || pool.length;
-    count.textContent = total + (total === 1 ? " word left" : " words left");
+    const filtering = !!q;
+    const shown = pool.length;
+    count.textContent = filtering
+      ? (shown + " match" + (shown === 1 ? "" : "es"))
+      : (total + (total === 1 ? " word left" : " words left"));
+    count.classList.toggle("show", filtering);
     grid.innerHTML = "";
     pool.forEach((w) => {
+      const up = w.toUpperCase();
       const b = document.createElement("button");
       b.type = "button";
       b.className = "pool-word";
-      b.textContent = w.toUpperCase();
-      b.title = "Load " + w.toUpperCase() + " as your guess";
-      b.addEventListener("click", () => this._loadGuess(w));
+      b.title = up + " — in the candidate pool";   // read-only reference; matches are highlighted by search
+      b.setAttribute("aria-disabled", "true");
+      b.tabIndex = -1;
+      // POOL is reference-only: no click-to-load. The guess is loaded from
+      // SOLVE / SHRED rows (see _renderSuggestions), human's choice.
+      if (filtering) {
+        if (q.includes("_")) {
+          b.textContent = up;   // positional pattern: highlight whole slot on hover only
+        } else {
+          // letter mode: highlight every occurrence of each typed letter
+          const need = q.split("");
+          const html = up.split("").map((c) =>
+            need.includes(c) ? " " + c + " " : c
+          ).join("");
+          b.innerHTML = html.replace(/ (.+?) /g, '<span class="hl">$1</span>');
+        }
+      } else {
+        b.textContent = up;
+      }
       grid.appendChild(b);
     });
-    if (total > pool.length) {
+    if (!filtering && total > shown) {
       more.classList.remove("hidden");
-      more.textContent = "…and " + (total - pool.length) + " more";
+      more.textContent = "…and " + (total - shown) + " more";
     } else {
       more.classList.add("hidden");
     }
   }
 
-  // Load a word into the active entry row (used by the POOL card). Only works
-  // before the game is over / while a move is legal.
+  // Load a word into the active entry row (used by the SOLVE/SHRED rows). Only
+  // works before the game is over / while a move is legal.
   _loadGuess(word) {
     if (this.busy || this.solved) return;
     if (this.history.length >= 6) return;
@@ -405,11 +500,11 @@ class App {
 
   async logHint() {
     const el = this.$("hint-letter");
-    const letter = (el.value || "").toUpperCase();
-    if (!letter) {
-      this.alert("INPUT_ERROR", "No hint letter", "Type a single letter A–Z first.");
-      return;
-    }
+    // Mirror the board: only a single A–Z can ever be logged. Strip anything
+    // else so the server never sees a bad character (no INPUT_ERROR path).
+    const letter = (el.value || "").toUpperCase().replace(/[^A-Z]/g, "").slice(0, 1);
+    el.value = "";
+    if (!letter) return;   // nothing valid typed — just no-op, like an empty board key
     try {
       const st = await this._post("/api/hint", { letter });
       el.value = "";
@@ -451,15 +546,13 @@ class App {
     }
   }
 
-  // App-driven, graceful exit: hands off to the native host, which shows the
-  // closing splash and frees the backend port. Falls back to a plain close if
-  // the host API isn't wired (e.g. running the web UI outside the desktop exe).
-  exitApp() {
-    if (window.pywebview && window.pywebview.api && window.pywebview.api.exit_app) {
-      window.pywebview.api.exit_app();
-    } else {
-      this.alert("INFO", "Exit", "Close this tab/window to quit.");
-    }
+  // Hide the boot splash overlay (shown by default in index.html). Called once
+  // the UI is live. Exposed as window.__hideSplash too so the host can dismiss
+  // it directly if needed (defensive — the app hides it on first successful
+  // refresh, so it never depends on a poll endpoint that doesn't exist).
+  _hideSplash() {
+    const el = this.$("splash");
+    if (el) el.classList.add("hidden");
   }
 
   // ── loud, categorized alerts ───────────────────────────────

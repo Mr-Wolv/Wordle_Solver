@@ -40,7 +40,7 @@ from wordle_solver.engine.modes import (
 # WordleEngine per call reloads the 2315x2315 pattern matrix + all decision
 # trees (~5-7s). Reusing ONE engine per process (fully reset between games)
 # makes each game ~0.1s instead of ~7s -- turning an 18-hour gate into a
-# ~15-minute one. Safe: every call does set_mode + add_hint + update_state
+# ~18-minute one. Safe: every call does set_mode + add_hint + update_state
 # from a clean reset(), so there is no cross-game state leakage.
 _ENGINE: WordleEngine | None = None
 

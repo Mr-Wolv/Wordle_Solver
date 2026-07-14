@@ -21,9 +21,7 @@ def _fake_window(port_holder: list):
 
     class _Win:
         def evaluate_js(self, js):
-            # capture the __setPort call so we know which port boot chose
-            if "__setPort" in js:
-                port_holder.append(int(js.split("(")[1].rstrip(");")))
+            pass
 
         def load_url(self, url):
             port_holder.append(url)

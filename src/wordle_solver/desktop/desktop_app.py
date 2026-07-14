@@ -188,20 +188,18 @@ def start_frozen_server(port: int) -> None:
     and verifiable even when no native window can be created (headless CI /
     a host without WebView2). The server runs on a daemon thread; the process
     — and therefore the server and its memory-mapped matrix — is released on
-    window close. The splash already points at ``port`` (it is included in the
-    splash URL as ``#port=...``), so the frontend connects immediately.
+    window close. ``boot`` points the window at ``http://127.0.0.1:{port}/``
+    once the server answers, so the frontend connects immediately.
     """
     import uvicorn
     import wordle_solver.app.web_server as web_server
 
     web_server.configure_engine(port)
-    web_server.set_load_status("Loading word matrix…")
     try:
         web_server.engine.get_suggestions()
         web_server.engine.get_suggestions(is_hard_mode=True)
     except Exception:
         pass
-    web_server.set_load_status("Ready")
     srv = uvicorn.Server(
         uvicorn.Config(web_server.app, host="127.0.0.1", port=port, log_level="error")
     )
@@ -258,10 +256,6 @@ def boot(window) -> bool:
         proc = None          # in-flight dev-server child (source mode)
         try:
             port = find_free_port(PREFERRED_PORT + attempt - 1)
-            try:
-                window.evaluate_js(f"if(window.__setPort)window.__setPort({port});")
-            except Exception:
-                pass
 
             if _is_frozen():
                 # Frozen bundle: the server was already started in
@@ -346,52 +340,53 @@ def _reap(proc) -> None:
 
 
 def close_with_splash(window) -> None:
-    """App-driven exit: show an inline 'shutting down' screen, then quit.
+    """App-driven exit: show the inline 'shutting down' overlay, then quit.
 
-    Graceful path (no os._exit hard-kill): we paint the closing screen
-    directly via load_html so there's no file-load race, give WebView2 a beat
-    to repaint, then destroy the window and return — pywebview tears the
-    process down cleanly on its own. """
+    The closing screen is an IN-PAGE overlay (window.__showClosing), NOT a
+    navigation — so it can never become a swipe/back target.
+
+    CRITICAL: pywebview must close on its OWN GUI thread. Calling
+    window.destroy() from a worker thread does nothing, then pywebview force-
+    kills the process after ~7s (the hang you saw) and the overlay never
+    paints. So we (1) paint the overlay right here on the GUI thread, then
+    (2) ask the JS to call back request_close() on the GUI thread — which
+    stops the backend and destroys the window properly. No hang, splash shows.
+    """
     global APP_WINDOW
     APP_WINDOW = None
-    # Stop the backend child first so the closing screen isn't fighting a
-    # dying server, and the matrix file is released before the process ends.
-    _stop_dev_server()
+    # 1) Paint the closing overlay (one non-blocking call on the GUI thread).
     try:
-        closing_html = (
-            "<!doctype html><html><head><meta charset='utf-8'>"
-            "<style>html,body{margin:0;height:100%;background:#0b0e14;color:#eef2f8;"
-            "font-family:'Segoe UI',system-ui,sans-serif;display:flex;flex-direction:column;"
-            "align-items:center;justify-content:center;gap:22px}"
-            ".mark{width:84px;height:84px;border-radius:18px;display:flex;align-items:center;"
-            "justify-content:center;background:#161d2b;border:1px solid #283142;font-size:40px;"
-            "color:#34d27b}.title{letter-spacing:3px;font-size:18px;color:#9aa7bd}"
-            ".title b{color:#eef2f8}.spin{width:34px;height:34px;border:3px solid #283142;"
-            "border-top-color:#34d27b;border-radius:50%;animation:s .8s linear infinite}"
-            "@keyframes s{to{transform:rotate(360deg)}}.st{font-size:12px;color:#6b788f}"
-            "</style></head><body><div class='mark'>&#9670;</div>"
-            "<div class='title'>WORDLE <b>STRAT-CONSOLE</b></div>"
-            "<div class='spin'></div><div class='st' id='st'>Shutting down…</div></body></html>"
+        window.evaluate_js("window.__showClosing&&window.__showClosing()")
+    except Exception:
+        pass
+    # 2) Hand control back to the GUI thread via a deferred js_api call so the
+    #    overlay paints first and destroy() runs where pywebview expects it.
+    #    setTimeout lets the browser actually paint the closing screen before
+    #    we tear the window down (no instant disappear, splash shows).
+    try:
+        window.evaluate_js(
+            "(function(){"
+            "if(window.__showClosing)window.__showClosing();"
+            "setTimeout(function(){"
+            "var a=window.pywebview&&window.pywebview.api;"
+            "if(a&&a.request_close)a.request_close();"
+            "},350);})()"
         )
-        window.load_html(closing_html)
     except Exception:
-        pass
-    # Let the screen paint, then close gracefully (pywebview ends the process).
-    time.sleep(0.9)
-    try:
-        window.destroy()
-    except Exception:
-        pass
+        # Last resort: ensure the process ends even if the callback fails.
+        try:
+            window.destroy()
+        except Exception:
+            pass
 
 
 # ── window + lifecycle ─────────────────────────────────────────────────────────
 def main():
     global APP_WINDOW
     icon = assets_path("icon.ico") if os.path.exists(assets_path("icon.ico")) else None
-    splash_path = assets_path("splash.html")
 
-    # Pick an initial free port so the splash knows where to poll; boot() may
-    # still choose a different one (and will tell the splash via __setPort).
+    # Pick an initial free port so the frozen bundle's in-process server binds
+    # to it; boot() may choose a different one in source/dev mode.
     try:
         initial_port = find_free_port(PREFERRED_PORT)
     except RuntimeError as e:
@@ -406,17 +401,49 @@ def main():
         )
         return
 
+    # Frozen bundle: start the HTTP backend BEFORE creating the window, so we
+    # can open the window DIRECTLY on the game URL. The boot splash is an
+    # IN-PAGE overlay in index.html, so it's visible from frame 1 — no black
+    # flash, and still a single navigation (kills the swipe-back-to-splash bug).
+    # On a normal desktop the window opens next and connects to the same port.
+    frozen_url = "about:blank"
+    if _is_frozen():
+        try:
+            start_frozen_server(initial_port)
+            frozen_url = f"http://127.0.0.1:{initial_port}/"
+        except Exception as e:  # pragma: no cover - defensive
+            show_fatal(
+                "Backend failed to start",
+                "The solver engine couldn't be launched.",
+                [
+                    "Relaunch the app — the backend starts automatically.",
+                    "If it repeats, the technical detail below is what to report.",
+                ],
+                e,
+            )
+            return
+
     try:
+        # NON-FRAMELESS native window: we keep the REAL Windows title bar so
+        # drag/resize/double-click-maximize behave EXACTLY like a normal app
+        # (e.g. the Hermes app you're in) — smooth at any DPI/refresh, no JS
+        # round-trip lag. We paint the title bar DARK via DWM immersive mode
+        # (see _apply_dark_titlebar) so it never shows the OS accent (no red
+        # bar), while the WebView2 content gives us our own dark UI below it.
+        # min/max/close are the OS controls. The boot splash is an in-page
+        # overlay (single navigation) so swipe-back is impossible.
         window = webview.create_window(
             title="Wordle Strat-Console",
-            url=file_uri(assets_path("splash.html")) + f"#port={initial_port}",
+            url=frozen_url,
             width=1240,
             height=840,
-            min_size=(900, 640),
+            min_size=(900, 720),
             resizable=True,
             fullscreen=False,
+            frameless=False,
             text_select=False,
             confirm_close=False,
+            background_color="#0b0e14",
         )
     except Exception as e:
         show_fatal(
@@ -432,43 +459,54 @@ def main():
         )
         return
 
-    # Frozen bundle: the HTTP backend must be reachable BEFORE the native
-    # window is created, so the solver is verifiable even on a headless host
-    # (or when WebView2 can't open a window). Start it now; boot() will simply
-    # point the window at the already-live port. On a normal desktop the
-    # window opens next and connects to the same port.
-    if _is_frozen():
-        try:
-            start_frozen_server(initial_port)
-        except Exception as e:  # pragma: no cover - defensive
-            show_fatal(
-                "Backend failed to start",
-                "The solver engine couldn't be launched.",
-                [
-                    "Relaunch the app — the backend starts automatically.",
-                    "If it repeats, the technical detail below is what to report.",
-                ],
-                e,
-            )
-            return
-
     APP_WINDOW = window
+
+    # ── Native window chrome (keep the REAL Windows title bar) ──────────
+    # We keep the OS title bar so drag / 8-edge resize / double-click-maximize
+    # behave EXACTLY like a normal Windows app (e.g. the Hermes app), with zero
+    # JS round-trip lag and no DPI/Hz glitches. We only darken it via DWM
+    # immersive mode so it never shows the user's OS accent (no red bar), while
+    # the WebView2 content below is our own dark UI. min/max/close are the OS
+    # controls — no custom buttons needed.
+
+    # Dark-title-bar helper (defined above as _apply_dark_titlebar).
+
+    def _apply_dark_titlebar(win):
+        """Paint the native title bar dark via DWM immersive mode (Win10 1809+).
+
+        No-op / silent fallback on older Windows. Uses ctypes directly so we
+        don't depend on pywin32.
+        """
+        try:
+            DWMWA_USE_IMMERSIVE_DARK_MODE = 20
+            hwnd = getattr(getattr(win, "native", None), "Handle", None)
+            if not hwnd:
+                # winforms form exposes .Handle; ctypes needs an int.
+                hwnd = getattr(getattr(win, "native", None), "Handle", 0)
+            if not hwnd:
+                return
+            DwmSetWindowAttribute = ctypes.windll.dwmapi.DwmSetWindowAttribute
+            value = ctypes.c_int(1)
+            DwmSetWindowAttribute(
+                int(hwnd),
+                ctypes.c_int(DWMWA_USE_IMMERSIVE_DARK_MODE),
+                ctypes.byref(value),
+                ctypes.sizeof(value),
+            )
+        except Exception:
+            pass
+
+    _apply_dark_titlebar(window)
 
     _leaving = {"native": False}
 
     def _on_closed() -> None:
-        # Native close box (no pre-close event in pywebview 6.2.1). Use a
-        # graceful destroy so the process ends cleanly; guard against a
-        # double fire if the app-driven Exit path already started teardown.
+        # Alt+F4 / system-menu close. Guard against a double fire if the in-app
+        # Exit path already started teardown.
         if _leaving["native"]:
             return
         _leaving["native"] = True
         _stop_dev_server()  # release the matrix before the process ends
-        if window is not None:
-            try:
-                window.destroy()
-            except Exception:
-                pass
 
     assert window is not None, "pywebview failed to create the window"
     window.events.closed += _on_closed
@@ -478,14 +516,31 @@ def main():
         boot(window)
 
     def exit_app():
-        # App-driven exit shows the closing splash (see close_with_splash);
-        # when the native box is used instead, _on_closed hard-kills directly.
+        # App-driven exit shows the closing splash (see close_with_splash).
         if _leaving["native"]:
             return
         _leaving["native"] = True
         close_with_splash(window)
 
-    window.expose(retry, exit_app)
+    def request_close():
+        # Called by close_with_splash from a deferred js_api callback, so this
+        # runs on pywebview's GUI thread where window.destroy() is valid. Stops
+        # the backend then closes cleanly (no ~7s hang, splash shows first).
+        try:
+            _stop_dev_server()  # release the matrix before the process ends
+        except Exception:
+            pass
+        try:
+            window.destroy()
+        except Exception:
+            pass
+
+    def on_ready():
+        # JS calls this when the boot overlay finishes fading — a hook point
+        # for any future host-side "UI is visible" work. No-op for now.
+        pass
+
+    window.expose(retry, exit_app, request_close, on_ready)
 
     # Start the heavy boot on a worker thread so the splash spinner keeps
     # animating while Python imports the backend. In the frozen bundle the

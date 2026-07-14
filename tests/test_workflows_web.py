@@ -294,23 +294,22 @@ def test_W9_hint_happy(page):
 
 # ── W10: hint rule violations (unhappy) ────────────────────────
 def test_W10_hint_violations(page):
-    # non-letter
+    # non-letter: the UI sanitizes the hint box to a single A–Z as you type, so
+    # a digit never reaches the server — it is silently stripped to nothing and
+    # logging a blank is a no-op (no error alert, box stays empty).
     page.fill("#hint-letter", "3")
     page.click("#hint-btn")
     page.wait_for_timeout(150)
-    assert "INPUT" in page.locator("#alert").inner_text()
-    # valid vowel then duplicate
+    assert page.locator("#hint-letter").input_value() == ""
+    assert page.locator("#alert").get_attribute("class").find("alert-input") == -1
+    # valid vowel then a SECOND vowel -> rejected by the NYT 1-vowel rule (LOGIC).
     page.fill("#hint-letter", "e")
     page.click("#hint-btn")
-    page.wait_for_timeout(120)
-    page.fill("#hint-letter", "e")
-    page.click("#hint-btn")
-    page.wait_for_timeout(120)
-    assert "INPUT" in page.locator("#alert").inner_text()
-    # second vowel rejected (LOGIC)
+    page.wait_for_timeout(150)
+    assert "SUCCESS" in page.locator("#alert").inner_text()
     page.fill("#hint-letter", "a")
     page.click("#hint-btn")
-    page.wait_for_timeout(120)
+    page.wait_for_timeout(150)
     assert "LOGIC" in page.locator("#alert").inner_text()
 
 
