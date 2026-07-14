@@ -53,8 +53,12 @@ exhaustive domains**, fixed the moment a game begins:
 
 - **Normal/Hard** is your choice (toggle before turn 1).
 - **Hints** are the *official* NYT hint mechanic: reveal **1 consonant + 1 vowel**.
-  A word made only of vowels/consonants (e.g. `queue`, `rhythm`) forces the
-  "1 hint" domain by rule — the engine handles this automatically.
+  A word containing *only* consonants (e.g. `rhythm`, which has no vowels in
+  this engine — `y` counts as a consonant) or *only* vowels cannot supply both
+  kinds of hint, so it forces the "1 hint" domain by rule — the engine picks a
+  single legal hint automatically. A word that has **both** a vowel and a
+  consonant (e.g. `queue`, with `u`/`e` vowels *and* `q`) takes the full **2-hint**
+  domain instead. Both cases are handled automatically; no manual mode switch.
 - The **domain locks after turn 1**. You'll see a loud **DOMAIN LOCKED** notice,
   and both the HARD toggle and the hint input show a visible **✕ locked** badge.
   This is intentional: the solver committed to a fixed game space the moment you
