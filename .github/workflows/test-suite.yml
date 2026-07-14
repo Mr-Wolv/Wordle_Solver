@@ -37,6 +37,10 @@ jobs:
         run: |
           python -m pip install --upgrade pip
           pip install -r requirements.txt
+          # The e2e web suites (test_e2e_web.py, test_workflows_web.py) drive a
+          # real Chromium via Playwright. Install the browser binary so those
+          # tests run (and actually verify the UI), not just skip.
+          python -m playwright install chromium
 
       - name: Generate pattern matrix (derived from committed CSV)
         # scientific_word_data.csv + residual_optimal*.json + t1_h_opening.json
