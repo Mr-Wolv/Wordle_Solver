@@ -266,8 +266,17 @@ def boot(window) -> bool:
             if _is_frozen():
                 # Frozen bundle: the server was already started in
                 # ``start_frozen_server`` (called from main() *before*
-                # webview.start) so it is reachable even without a window. We
-                # just point the window at the already-live port and return.
+                # webview.start) on ``_FROZEN_SERVER_PORT`` — use THAT exact
+                # port. Re-deriving it via find_free_port here would skip the
+                # port our own server is bound to (the probe can't re-bind it)
+                # and wait on the wrong, empty port -> "never came up". The
+                # server is reachable even without a window, so just verify
+                # and point the window at it.
+                port = _FROZEN_SERVER_PORT
+                if port is None:
+                    # Defensive: shouldn't happen (main sets it before boot),
+                    # but fall back to a fresh probe rather than failing blind.
+                    port = find_free_port(PREFERRED_PORT + attempt - 1)
                 if _wait_for_server(port):
                     window.load_url(f"http://127.0.0.1:{port}/")
                     return True
