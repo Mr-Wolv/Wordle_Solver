@@ -124,11 +124,90 @@ def running_exe():
             pytest.fail("frozen bundle did not come up on its HTTP API")
         yield port
     finally:
-        proc.terminate()
+        # In a headless CI host the native window may never open, so the frozen
+        # EXE won't exit on terminate() (no window to close -> WebView2 keeps it
+        # alive). Use taskkill /F (what a real user's window-close triggers via
+        # the app's own teardown) so the test never hangs. Wait briefly for the
+        # kill to land so the Popen object is reaped (avoids an unraisable
+        # ResourceWarning under -W error).
         try:
-            proc.wait(timeout=10)
+            subprocess.run(
+                ["taskkill", "/F", "/PID", str(proc.pid)],
+                capture_output=True, timeout=5,
+            )
+            proc.wait(timeout=5)
         except Exception:
-            proc.kill()
+            try:
+                proc.kill()
+            except Exception:
+                pass
+
+
+@pytest.fixture(scope="module")
+def running_exe_default_port():
+    # Build if absent so the suite is self-sufficient.
+    if not os.path.exists(EXE):
+        subprocess.run(
+            [sys.executable, os.path.join(REPO_ROOT, "src", "wordle_solver", "desktop", "build_dist.py")], check=True
+        )
+    assert os.path.exists(EXE), "frozen bundle missing even after build"
+
+    # DEFAULT launch path: NO WSC_PORT env override. This is exactly the path
+    # that regressed (boot() re-probed a port the server already held, so the
+    # window waited on an empty port). The bundle must come up on whatever free
+    # port it auto-chooses and serve its HTTP API without any env hint.
+    env = {k: v for k, v in os.environ.items() if k != "WSC_PORT"}
+    proc = subprocess.Popen([EXE], cwd=FOLDER, env=env)
+    try:
+        # Discover the auto-chosen port by scanning the listeners this exe owns.
+        import subprocess as _sp
+        listing = _sp.run(
+            ["powershell", "-NoProfile", "-Command",
+             "Get-NetTCPConnection -State Listen -ErrorAction SilentlyContinue | "
+             "Where-Object { $_.OwningProcess -in "
+             "(Get-CimInstance Win32_Process | Where-Object { $_.Name -eq 'Wordle-Strat-Console.exe' } "
+             "| Select-Object -ExpandProperty ProcessId) } | Select-Object -ExpandProperty LocalPort"],
+            capture_output=True, text=True,
+        ).stdout.split()
+        # Tight candidate set: prefer the shell probe; otherwise only sweep a
+        # small window around the preferred port so CI can never hang on a
+        # slow 600-port fallback.
+        found = [int(p) for p in listing if p.strip().isdigit()]
+        candidates = found if found else [8753 + i for i in range(30)]
+        up = None
+        for p in candidates:
+            if _wait_for_server(p, timeout=2.0):
+                up = p
+                break
+        if up is None:
+            pytest.fail("frozen bundle (default port) did not come up on its HTTP API")
+        yield up
+    finally:
+        # In a headless CI host the native window may never open, so the frozen
+        # EXE won't exit on terminate() (no window to close -> WebView2 keeps it
+        # alive). Use taskkill /F (what a real user's window-close triggers via
+        # the app's own teardown) so the test never hangs. Wait briefly for the
+        # kill to land so the Popen object is reaped (avoids an unraisable
+        # ResourceWarning under -W error).
+        try:
+            subprocess.run(
+                ["taskkill", "/F", "/PID", str(proc.pid)],
+                capture_output=True, timeout=5,
+            )
+            proc.wait(timeout=5)
+        except Exception:
+            try:
+                proc.kill()
+            except Exception:
+                pass
+
+
+@pytest.mark.skipif(not _BUILD_OPT_IN,
+                    reason="set WS_BUILD_TEST=1 to run the heavy frozen-bundle build test")
+def test_frozen_bundle_default_port_comes_up(running_exe_default_port):
+    # The default (no WSC_PORT) launch must serve the solver without an env hint.
+    st = _api(running_exe_default_port, "/api/state")
+    assert st.get("turn") == 1, "default-port bundle served an unexpected state"
 
 
 @pytest.mark.skipif(not _BUILD_OPT_IN,
