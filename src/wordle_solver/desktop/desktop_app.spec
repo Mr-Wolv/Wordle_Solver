@@ -59,7 +59,20 @@ a = Analysis(
     hookspath=[],
     hooksconfig={},
     runtime_hooks=[],
-    excludes=[],
+    # Exclude dev/test/REPL tooling so the frozen bundle is deterministic and
+    # lean regardless of what extra packages happen to live in the build venv.
+    # (A polluted local venv once bundled jedi/IPython/parso/tk adding ~38 MB
+    # and 6.5k files vs the clean CI build.) The engine needs none of these.
+    excludes=[
+        "jedi", "parso", "IPython", "ipykernel", "prompt_toolkit",
+        "pytest", "playwright", "websockets", "tornado", "watchfiles",
+        "psutil", "zmq", "yaml", "charset_normalizer", "markupsafe",
+        "_tkinter", "tkinter", "turtle", "lib2to3", "ensurepip",
+        "pip", "setuptools", "pydoc_data", "doctest", "unittest",
+        # Stray transitive deps some local venvs resolve but the engine/UI
+        # never use at runtime. Excluding keeps the bundle == clean CI build.
+        "PIL", "pillow", "pywin32", "win32com", "httptools",
+    ],
     noarchive=False,
     optimize=0,
 )
