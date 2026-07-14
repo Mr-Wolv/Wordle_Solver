@@ -64,17 +64,21 @@ jobs:
       run: |
         python -m pytest tests/test_frozen_bundle.py -q
 
-    # NOTE: intentionally NO artifact upload. The user requires the app to be
-    # reproducible from source anywhere, so the build above is the proof of
-    # reproducibility — we do NOT attach a prebuilt .exe to the release. The
-    # release page is still created (below) for the tag.
+    - name: Package built app folder for the release
+      # CI built dist/Wordle-Strat-Console/ FROM SOURCE above (reproducible,
+      # not a manual upload). Zip that exact one-folder app and attach it to
+      # the release so the tag ships the same artifact you get locally from
+      # `python build_game.py`.
+      run: |
+        Compress-Archive -Path dist/Wordle-Strat-Console -DestinationPath Wordle-Strat-Console.zip -Force
 
-    - name: Create GitHub Release
+    - name: Create GitHub Release with built app attached
       uses: softprops/action-gh-release@v3
       with:
         name: Release ${{ github.ref_name }}
         draft: false
         prerelease: false
-        generate_release_notes: true # Automatically pulls commit messages into the description
+        generate_release_notes: true
+        files: Wordle-Strat-Console.zip
       env:
         GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
