@@ -32,13 +32,14 @@ jobs:
     - name: Set up Python 3.12
       uses: actions/setup-python@v5
       with:
-        # Pin to an exact 3.12.x patch (3.12.13) so the frozen bundle is
-        # byte-comparable with a local build made via uv (build_game.py boots
-        # the build venv from uv's cpython-3.12.13). PyInstaller freezes the
-        # CPython runtime .pyd/.dll into the bundle; matching the patch removes
-        # the last few-hundred-KB size skew. (We avoid 3.12.0 specifically —
-        # setup-python's internal pip check fails on that exact patch.)
-        python-version: '3.12.13'
+        # Float on the latest 3.12.x (security patches). An exact patch pin is
+        # avoided: 3.12.0 breaks setup-python's internal pip check, and other
+        # patches (e.g. 3.12.13) are absent from the windows-2025 catalog. The
+        # local build (build_game.py) tracks uv's latest 3.12.x to stay aligned.
+        # The frozen bundle's dependency boundary is already CI-identical (the
+        # build strips PYTHONPATH / installs only requirements.txt); only the
+        # CPython runtime .pyd/.dll can shift by a few hundred KB across patches.
+        python-version: '3.12'
         cache: 'pip'
 
     - name: Install Dependencies

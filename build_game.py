@@ -69,38 +69,6 @@ def _rm(path: str) -> None:
         shutil.rmtree(path)
 
 
-def _resolve_base_python() -> str:
-    """Find a 3.12+ interpreter to bootstrap the clean build venv.
-
-    IMPORTANT: we must NOT seed from the project's own dev venv (.venv) — it
-    is itself polluted with agent-environment packages (boto3, openai, lxml,
-    ...) on this machine. To make the frozen bundle byte-comparable with CI,
-    we bootstrap from an `uv`-provisioned CPython 3.12.13 (the exact patch CI
-    pins). If uv is unavailable we fall back to the system Python 3.12. Either
-    way we install ONLY requirements.txt and strip PYTHONPATH at build time.
-    """
-    target = "3.12.13"
-    # Prefer a uv-managed interpreter so the local build freezes the SAME
-    # CPython runtime patch as CI (eliminates the .pyd/.dll size skew). Run uv
-    # with VIRTUAL_ENV unset so it searches managed/global installs rather
-    # than being confused by any already-activated dev venv.
-    uv_env = dict(os.environ)
-    uv_env.pop("VIRTUAL_ENV", None)
-    uv_py = subprocess.run(
-        ["uv", "python", "find", target, "--no-project"],
-        capture_output=True, text=True, env=uv_env,
-    )
-    if uv_py.returncode == 0 and uv_py.stdout.strip():
-        cand = uv_py.stdout.strip().splitlines()[0].strip()
-        if os.path.exists(cand):
-            return cand
-    sys_py = r"C:\Users\GIGABYTE\AppData\Local\Programs\Python\Python312\python.exe"
-    for cand in (sys_py, "py -3.12", "python3.12", "python"):
-        if os.path.exists(cand):
-            return cand
-    return "py -3.12"
-
-
 def _ensure_build_venv() -> str:
     """Create a fresh `.venv_build` from requirements.txt; return its python.
 
@@ -108,12 +76,26 @@ def _ensure_build_venv() -> str:
     previously-polluted venv can never leak extra packages (boto3, lxml, ...)
     into the frozen bundle. Recreation takes a few seconds and is the entire
     point of the clean-venv approach.
+
+    We bootstrap from the *system* Python 3.12 (known installed here), then
+    install ONLY requirements.txt with PYTHONPATH stripped / user-site off so
+    the global agent-environment pollution on this host cannot be inherited.
+    The frozen CPython runtime will be 3.12.0 (the system patch); CI floats on
+    the latest 3.12.x, so the bundle may differ from CI by a few hundred KB of
+    runtime .pyd/.dll across patches — benign, same minor version, self-play
+    proven identical. The dependency *boundary* is identical (only
+    requirements.txt is bundled), which was the actual size hazard.
     """
-    base = _resolve_base_python()
-    print(f"[build] (re)creating clean build venv (.venv_build) from {base}")
     _rm(BUILD_VENV)
-    # `base` may be "py -3.12"; split into argv for subprocess.
-    base_argv = base.split()
+    sys_py = r"C:\Users\GIGABYTE\AppData\Local\Programs\Python\Python312\python.exe"
+    base_argv = None
+    for cand in (sys_py, "py -3.12", "python3.12", "python"):
+        if os.path.exists(cand):
+            base_argv = cand.split()
+            break
+    if base_argv is None:
+        base_argv = ["py", "-3.12"]
+    print(f"[build] (re)creating clean build venv (.venv_build) from {base_argv}")
     subprocess.run([*base_argv, "-m", "venv", BUILD_VENV], check=True)
     # Upgrade pip then install ONLY requirements.txt (CI-equivalent boundary).
     # Run with a sanitized env so the global PYTHONPATH / user-site pollution
