@@ -87,11 +87,12 @@ def _resolve_base_python() -> str:
         cand = uv_py.stdout.strip().splitlines()[0].strip()
         if os.path.exists(cand):
             return cand
-    sys_py = r"C:\Users\GIGABYTE\AppData\Local\Programs\Python\Python312\python.exe"
-    for cand in (sys_py, "py -3.12", "python3.12", "python"):
-        if os.path.exists(cand):
-            return cand
-    return "py -3.12"
+    # Portable fallback: the interpreter already running this script. On CI that
+    # is setup-python's 3.12.10; locally it is whatever `python` invoked us.
+    # `python -m venv` creates an ISOLATED venv (no base site-packages), and the
+    # pip/PyInstaller steps run with _clean_env() (PYTHONPATH stripped, user-site
+    # off), so a polluted base cannot leak into the frozen bundle.
+    return sys.executable
 
 
 def _ensure_build_venv() -> str:

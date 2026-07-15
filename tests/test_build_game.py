@@ -73,6 +73,9 @@ def test_no_stray_root_exe_after_build(tmp_path, monkeypatch):
     monkeypatch.setattr(sys, "argv", ["build_game.py"])
     # prevent main() from wiping DIST_DIR so our simulated build output survives
     monkeypatch.setattr(mod, "_rm", lambda _p: None)
+    # don't actually provision a build venv (slow / env-specific); the PyInstaller
+    # call is mocked below, so main() only needs *a* python path.
+    monkeypatch.setattr(mod, "_ensure_build_venv", lambda: sys.executable)
     # fake a stray root exe + the real one-folder exe (as if pyinstaller wrote them)
     stray = os.path.join(REPO_ROOT, "dist", "Wordle-Strat-Console.exe")
     real_dir = os.path.join(REPO_ROOT, "dist", "Wordle-Strat-Console")
