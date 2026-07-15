@@ -19,7 +19,6 @@ jobs:
   build:
     runs-on: windows-latest
     env:
-      PYTHONWARNINGS: error
       WS_BUILD_TEST: "1"
       # The package lives under src/ and is NOT pip-installed in CI (it is
       # injected via conftest for pytest). Bare `python -m wordle_solver...`
@@ -70,7 +69,11 @@ jobs:
       # Builds (if absent) + launches the actual EXE and self-plays the hard
       # no-hint residuals through its HTTP API. This is the behavioural
       # equivalence proof the release depends on — it must pass before we
-      # publish the tag.
+      # publish the tag. PYTHONWARNINGS: error keeps the gate zero-warning
+      # (scoped to this step; it is NOT set during pip install / build, which
+      # would otherwise fail proxy_tools' sdist build on a DeprecationWarning).
+      env:
+        PYTHONWARNINGS: error
       run: |
         .venv_build/Scripts/python.exe -m pytest tests/test_frozen_bundle.py -q
 
