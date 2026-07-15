@@ -29,28 +29,27 @@ jobs:
     - name: Checkout Code
       uses: actions/checkout@v4
 
-    - name: Set up Python 3.12
-      uses: actions/setup-python@v5
-      with:
-        # Pin to 3.12.10: the newest 3.12.x available in setup-python's
-        # windows-2025 catalog (3.12.11+ are not published there, and 3.12.0
-        # breaks setup-python's internal pip check). The local build
-        # (build_game.py) bootstraps from uv's cpython-3.12.10 so both freeze
-        # the identical CPython runtime .pyd/.dll -> byte-comparable artifacts.
-        python-version: '3.12.10'
-        cache: 'pip'
+    - name: Install uv
+      uses: astral-sh/setup-uv@v5
 
-    - name: Install Dependencies
+    - name: Provision CPython 3.12.10 (build-standalone) + clean .venv_build
+      # IMPORTANT: the frozen bundle's CPython runtime must match the LOCAL
+      # build exactly. The local build (build_game.py) bootstraps .venv_build
+      # from uv's managed cpython-3.12.10 (python-build-standalone). We use the
+      # SAME provisioner here (NOT actions/setup-python, whose CPython distro
+      # produces different python312.dll / libcrypto sizes at the same version
+      # string). This makes the local and CI artifacts byte-comparable.
       run: |
-        python -m pip install --upgrade pip
-        pip install -r requirements.txt
+        uv python install 3.12.10
+        uv venv --python 3.12.10 .venv_build
+        uv pip install -r requirements.txt
 
     - name: Generate Data and Matrix
       run: |
         # scientific_word_data.csv is committed (deterministic, generated once
         # offline via wordle_solver.generators.build_word_data + wordfreq). Only
         # the matrix -- derived from it -- is rebuilt here.
-        python -m wordle_solver.generators.build_matrix
+        .venv_build/Scripts/python.exe -m wordle_solver.generators.build_matrix
 
     # residual_optimal*.json and t1_h_opening.json are committed artifacts
     # (generated offline by wordle_solver.generators.build_residual_optimal /
@@ -59,7 +58,7 @@ jobs:
     # regeneration step is needed here.
 
     - name: Build one-folder bundle (removes redundant root exe)
-      run: python src/wordle_solver/desktop/build_dist.py
+      run: .venv_build/Scripts/python.exe src/wordle_solver/desktop/build_dist.py
 
     - name: Verify built EXE via frozen-bundle self-play
       # Builds (if absent) + launches the actual EXE and self-plays the hard
@@ -67,7 +66,7 @@ jobs:
       # equivalence proof the release depends on — it must pass before we
       # publish the tag.
       run: |
-        python -m pytest tests/test_frozen_bundle.py -q
+        .venv_build/Scripts/python.exe -m pytest tests/test_frozen_bundle.py -q
 
     - name: Package built app folder for the release
       # CI built dist/Wordle-Strat-Console/ FROM SOURCE above (reproducible,
