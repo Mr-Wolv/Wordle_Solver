@@ -1,9 +1,9 @@
 # Auto detect text files and perform LF normalization
 * text=auto
-# Web UI assets frozen into the EXE must be byte-identical regardless of the
-# checkout platform (Windows CI checks out CRLF, local dev tree is LF). Pin
-# them to -text so the frozen bundle matches across builds.
-src/wordle_solver/desktop/web/index.html -text
-src/wordle_solver/desktop/web/styles.css -text
-src/wordle_solver/desktop/web/*.html -text
-src/wordle_solver/desktop/web/*.css -text
+# Web UI assets are frozen into the EXE and must be byte-identical across
+# builds regardless of checkout platform. The GitHub Windows runner sets
+# core.autocrlf=true, which converts text=auto files to CRLF on checkout;
+# `eol=lf` forces LF on checkout everywhere (overriding autocrlf) so the
+# frozen bundle matches the local LF build. Paths are repo-relative.
+src/wordle_solver/web/index.html text eol=lf
+src/wordle_solver/web/styles.css text eol=lf
