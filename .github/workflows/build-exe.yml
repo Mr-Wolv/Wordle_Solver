@@ -41,10 +41,12 @@ jobs:
       # string). This makes the local and CI artifacts byte-comparable.
       run: |
         uv python install 3.12.10
-        uv venv --python 3.12.10 .venv_build
-        # Install deps with pip (not `uv pip`) to mirror the local build_game.py
-        # path exactly: pip resolves the same wheels (proxy-tools ships a wheel,
-        # which `uv pip` would otherwise try to build from sdist and fail).
+        # Create the venv with the STDLIB `python -m venv` (not `uv venv`), so
+        # pip is seeded via ensurepip -- this exactly mirrors build_game.py's
+        # local path (uv-venv would omit pip). `uv python find` returns the
+        # same python-build-standalone 3.12.10 the local build uses.
+        $base = (uv python find 3.12.10 --no-project).Trim()
+        & $base -m venv .venv_build
         .venv_build/Scripts/python.exe -m pip install --upgrade pip
         .venv_build/Scripts/python.exe -m pip install -r requirements.txt
 
