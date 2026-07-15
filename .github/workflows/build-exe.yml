@@ -32,14 +32,13 @@ jobs:
     - name: Set up Python 3.12
       uses: actions/setup-python@v5
       with:
-        # Float on the latest 3.12.x (security patches). The frozen bundle's
-        # size can vary by a few hundred KB across 3.12.x patches because
-        # PyInstaller freezes the CPython runtime .pyd/.dll; the file set and
-        # dependency boundary are identical to a local build (build_game.py
-        # strips PYTHONPATH / disables user-site so only requirements.txt is
-        # bundled). Pinning an exact patch (e.g. 3.12.0) breaks setup-python's
-        # internal pip check, so we intentionally float here.
-        python-version: '3.12'
+        # Pin to an exact 3.12.x patch (3.12.13) so the frozen bundle is
+        # byte-comparable with a local build made via uv (build_game.py boots
+        # the build venv from uv's cpython-3.12.13). PyInstaller freezes the
+        # CPython runtime .pyd/.dll into the bundle; matching the patch removes
+        # the last few-hundred-KB size skew. (We avoid 3.12.0 specifically —
+        # setup-python's internal pip check fails on that exact patch.)
+        python-version: '3.12.13'
         cache: 'pip'
 
     - name: Install Dependencies

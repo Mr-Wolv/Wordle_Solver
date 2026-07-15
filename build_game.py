@@ -74,10 +74,26 @@ def _resolve_base_python() -> str:
 
     IMPORTANT: we must NOT seed from the project's own dev venv (.venv) — it
     is itself polluted with agent-environment packages (boto3, openai, lxml,
-    ...) on this machine. We bootstrap from the *system* Python 3.12, then
-    install ONLY requirements.txt and strip PYTHONPATH at build time, so the
-    frozen bundle matches CI's dependency boundary exactly.
+    ...) on this machine. To make the frozen bundle byte-comparable with CI,
+    we bootstrap from an `uv`-provisioned CPython 3.12.13 (the exact patch CI
+    pins). If uv is unavailable we fall back to the system Python 3.12. Either
+    way we install ONLY requirements.txt and strip PYTHONPATH at build time.
     """
+    target = "3.12.13"
+    # Prefer a uv-managed interpreter so the local build freezes the SAME
+    # CPython runtime patch as CI (eliminates the .pyd/.dll size skew). Run uv
+    # with VIRTUAL_ENV unset so it searches managed/global installs rather
+    # than being confused by any already-activated dev venv.
+    uv_env = dict(os.environ)
+    uv_env.pop("VIRTUAL_ENV", None)
+    uv_py = subprocess.run(
+        ["uv", "python", "find", target, "--no-project"],
+        capture_output=True, text=True, env=uv_env,
+    )
+    if uv_py.returncode == 0 and uv_py.stdout.strip():
+        cand = uv_py.stdout.strip().splitlines()[0].strip()
+        if os.path.exists(cand):
+            return cand
     sys_py = r"C:\Users\GIGABYTE\AppData\Local\Programs\Python\Python312\python.exe"
     for cand in (sys_py, "py -3.12", "python3.12", "python"):
         if os.path.exists(cand):
