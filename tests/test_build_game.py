@@ -42,7 +42,7 @@ def test_main_fails_cleanly_when_spec_missing(monkeypatch):
     monkeypatch.setattr(mod, "SPEC", os.path.join(REPO_ROOT, "nope.spec"))
     called = {}
 
-    def _fake_call(cmd, cwd=None):
+    def _fake_call(cmd, cwd=None, **_kwargs):
         called["cmd"] = cmd
         return 1  # should never be reached
 
@@ -83,7 +83,7 @@ def test_no_stray_root_exe_after_build(tmp_path, monkeypatch):
     with open(real_exe, "w"):
         pass
 
-    def _fake_call(cmd, cwd=None):
+    def _fake_call(cmd, cwd=None, **_kwargs):
         return 0  # pretend pyinstaller succeeded
 
     monkeypatch.setattr(mod.subprocess, "call", _fake_call)

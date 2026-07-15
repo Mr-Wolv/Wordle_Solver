@@ -134,12 +134,13 @@ _BUILD_OPT_IN = os.environ.get("WS_BUILD_TEST") == "1"
 
 @pytest.fixture(scope="module")
 def running_exe():
-    # Build if absent so the suite is self-sufficient.
-    if not os.path.exists(EXE):
+    # Build if absent (or a stale/zero-byte artifact was left behind) so the
+    # suite is self-sufficient and never launches a non-executable placeholder.
+    if not os.path.exists(EXE) or os.path.getsize(EXE) < 1_000_000:
         subprocess.run(
             [sys.executable, os.path.join(REPO_ROOT, "src", "wordle_solver", "desktop", "build_dist.py")], check=True
         )
-    assert os.path.exists(EXE), "frozen bundle missing even after build"
+    assert os.path.exists(EXE) and os.path.getsize(EXE) >= 1_000_000, "frozen bundle missing/invalid even after build"
 
     port = _find_free_port()
     env = dict(os.environ, WSC_PORT=str(port))

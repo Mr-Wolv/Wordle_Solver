@@ -17,6 +17,20 @@ import os
 import subprocess
 import sys
 
+# The host machine may carry a global PYTHONPATH / system-wide .pth that injects
+# an unrelated agent environment (boto3, openai, lxml, ...) into every Python
+# process. If inherited, PyInstaller would freeze those extras into the bundle
+# and the artifact would differ from the lean CI build (which installs only
+# requirements.txt). Strip PYTHONPATH and disable user-site so only the project
+# venv is the import source.
+def _clean_env() -> dict:
+    env = dict(os.environ)
+    env.pop("PYTHONPATH", None)
+    env["PYTHONNOUSERSITE"] = "1"
+    env["PIP_USER"] = "0"
+    return env
+
+
 ROOT = os.path.dirname(os.path.abspath(__file__))
 NAME = "Wordle-Strat-Console"
 SPEC = os.path.join(ROOT, "desktop_app.spec")
@@ -27,10 +41,11 @@ DIST = os.path.abspath(os.path.join(ROOT, "..", "..", "..", "dist"))
 def main():
     if not os.path.exists(SPEC):
         sys.exit(f"spec not found: {SPEC}")
-    # Build the one-folder bundle.
+    # Build the one-folder bundle. Run with a sanitized environment so the
+    # frozen artifact depends only on the project's pinned dependencies.
     subprocess.run(
         [sys.executable, "-m", "PyInstaller", "--noconfirm", "--clean", SPEC],
-        check=True,
+        check=True, env=_clean_env(),
     )
     # Remove the redundant root launcher; the real app is dist/<NAME>/.
     root_exe = os.path.join(DIST, NAME + ".exe")
