@@ -69,6 +69,31 @@ def _rm(path: str) -> None:
         shutil.rmtree(path)
 
 
+def _resolve_base_python() -> str:
+    """Find a 3.12.10 interpreter to bootstrap the clean build venv.
+
+    CI pins 3.12.10 (newest 3.12.x in setup-python's windows-2025 catalog),
+    so the local build bootstraps from uv's managed cpython-3.12.10 to freeze
+    the identical CPython runtime .pyd/.dll -> byte-comparable to CI. Falls
+    back to the system Python 3.12 if uv/3.12.10 is unavailable.
+    """
+    uv_env = dict(os.environ)
+    uv_env.pop("VIRTUAL_ENV", None)
+    uv_py = subprocess.run(
+        ["uv", "python", "find", "3.12.10", "--no-project"],
+        capture_output=True, text=True, env=uv_env,
+    )
+    if uv_py.returncode == 0 and uv_py.stdout.strip():
+        cand = uv_py.stdout.strip().splitlines()[0].strip()
+        if os.path.exists(cand):
+            return cand
+    sys_py = r"C:\Users\GIGABYTE\AppData\Local\Programs\Python\Python312\python.exe"
+    for cand in (sys_py, "py -3.12", "python3.12", "python"):
+        if os.path.exists(cand):
+            return cand
+    return "py -3.12"
+
+
 def _ensure_build_venv() -> str:
     """Create a fresh `.venv_build` from requirements.txt; return its python.
 
@@ -77,25 +102,15 @@ def _ensure_build_venv() -> str:
     into the frozen bundle. Recreation takes a few seconds and is the entire
     point of the clean-venv approach.
 
-    We bootstrap from the *system* Python 3.12 (known installed here), then
-    install ONLY requirements.txt with PYTHONPATH stripped / user-site off so
-    the global agent-environment pollution on this host cannot be inherited.
-    The frozen CPython runtime will be 3.12.0 (the system patch); CI floats on
-    the latest 3.12.x, so the bundle may differ from CI by a few hundred KB of
-    runtime .pyd/.dll across patches — benign, same minor version, self-play
-    proven identical. The dependency *boundary* is identical (only
-    requirements.txt is bundled), which was the actual size hazard.
+    We bootstrap from Python 3.12.10 (uv-managed, matching the CI pin) with
+    PYTHONPATH stripped / user-site off, then install ONLY requirements.txt,
+    so the global agent-environment pollution on this host cannot be inherited
+    and the frozen CPython runtime matches CI exactly.
     """
+    base = _resolve_base_python()
+    print(f"[build] (re)creating clean build venv (.venv_build) from {base}")
     _rm(BUILD_VENV)
-    sys_py = r"C:\Users\GIGABYTE\AppData\Local\Programs\Python\Python312\python.exe"
-    base_argv = None
-    for cand in (sys_py, "py -3.12", "python3.12", "python"):
-        if os.path.exists(cand):
-            base_argv = cand.split()
-            break
-    if base_argv is None:
-        base_argv = ["py", "-3.12"]
-    print(f"[build] (re)creating clean build venv (.venv_build) from {base_argv}")
+    base_argv = base.split()
     subprocess.run([*base_argv, "-m", "venv", BUILD_VENV], check=True)
     # Upgrade pip then install ONLY requirements.txt (CI-equivalent boundary).
     # Run with a sanitized env so the global PYTHONPATH / user-site pollution
