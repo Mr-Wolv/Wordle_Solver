@@ -34,6 +34,8 @@ MANIFEST
 # The desktop build recipe IS tracked (it is the reproducible build source, not
 # a throwaway generated file). Force-add the one committed spec:
 !src/wordle_solver/desktop/desktop_app.spec
+# Throwaway clean build venv created by build_game.py (pinned, CI-equivalent).
+.venv_build/
 
 # Installer logs
 pip-log.txt

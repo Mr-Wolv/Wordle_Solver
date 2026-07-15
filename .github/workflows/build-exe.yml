@@ -32,7 +32,12 @@ jobs:
     - name: Set up Python 3.12
       uses: actions/setup-python@v5
       with:
-        python-version: '3.12'
+        # Pin to an exact patch so the frozen bundle is byte-comparable with a
+        # local build made in a 3.12.0 venv (PyInstaller freezes the CPython
+        # runtime .pyd/.dll into the bundle; a different 3.12.x patch shifts
+        # those binary sizes by a few hundred KB). The local build script
+        # (build_game.py) creates .venv_build from the system Python 3.12.0.
+        python-version: '3.12.0'
         cache: 'pip'
 
     - name: Install Dependencies

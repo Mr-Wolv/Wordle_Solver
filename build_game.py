@@ -9,7 +9,18 @@ This script ONLY builds. It never launches the game, so it cannot leave a
 lingering process or spawn a fork-bomb. The frozen EXE runs its backend
 in-process (desktop_app._is_frozen) and self-terminates on window close.
 
-Requires the dev venv that has pyinstaller + the project deps installed.
+Determinism guarantee
+---------------------
+PyInstaller freezes *whatever is importable in the build environment*. If the
+build is run inside a polluted venv (one carrying extra packages the app does
+not use, e.g. boto3, lxml, openai), those extras get bundled too, making the
+local artifact larger and NON-identical to the CI build (which installs only
+`requirements.txt`). To prevent that, this script never uses the developer's
+active venv. It creates a throwaway, clean build venv at `.venv_build/` and
+installs exactly `requirements.txt` into it, then runs PyInstaller from there.
+That is the same dependency boundary CI uses, so the locally built folder is
+byte-comparable to the released artifact (modulo the unavoidable Python
+patch-level skew between the local 3.12.x and CI's latest 3.12.x).
 """
 from __future__ import annotations
 
@@ -29,10 +40,85 @@ BUILD_DIR = os.path.join(REPO_ROOT, "build")
 # still scrub any stray copy the spec might leave behind.
 STRAY_DIST = os.path.join(REPO_ROOT, "src", "wordle_solver", "desktop", "dist")
 
+# Clean, CI-equivalent build venv. Git-ignored (see .gitignore: `.venv`).
+BUILD_VENV = os.path.join(REPO_ROOT, ".venv_build")
+BUILD_VENV_PY = os.path.join(BUILD_VENV, "Scripts", "python.exe")
+BUILD_VENV_MARKER = os.path.join(BUILD_VENV, ".requirements_hash")
+REQUIREMENTS = os.path.join(REPO_ROOT, "requirements.txt")
+
+
+def _clean_env() -> dict:
+    """Return a copy of the environment with all pollution paths removed.
+
+    The host machine has a global PYTHONPATH pointing at a generic agent
+    venv (boto3, openai, lxml, ...) and a system-wide .pth that injects the
+    same into every interpreter. If inherited, PyInstaller freezes those
+    extras into the bundle and the local artifact becomes ~30 MB larger and
+    NON-identical to the CI build (which installs only requirements.txt).
+    Stripping PYTHONPATH (and disabling user-site) makes the clean build venv
+    the sole source of imports, matching CI's dependency boundary.
+    """
+    env = dict(os.environ)
+    env.pop("PYTHONPATH", None)
+    env["PYTHONNOUSERSITE"] = "1"
+    env["PIP_USER"] = "0"
+    return env
+
 
 def _rm(path: str) -> None:
     if os.path.isdir(path):
         shutil.rmtree(path)
+
+
+def _resolve_base_python() -> str:
+    """Find a 3.12+ interpreter to bootstrap the clean build venv.
+
+    Prefer the project's own dev venv (known 3.12), then the `py` launcher,
+    then bare `python`. We only use it to *create* the build venv; site-packages
+    from the dev venv are NOT inherited (venv is isolated).
+    """
+    dev_venv_py = os.path.join(REPO_ROOT, ".venv", "Scripts", "python.exe")
+    for cand in (dev_venv_py, "py -3.12", "python3.12", "python"):
+        if os.path.exists(cand):
+            return cand
+    # `py` may exist but not as a file path; try it directly.
+    return "py -3.12"
+
+
+def _requirements_signature() -> str:
+    import hashlib
+    with open(REQUIREMENTS, "rb") as fh:
+        return hashlib.sha256(fh.read()).hexdigest()
+
+
+def _ensure_build_venv() -> str:
+    """Create/refresh `.venv_build` from requirements.txt; return its python."""
+    sig = _requirements_signature()
+    marker_ok = os.path.exists(BUILD_VENV_MARKER) and (
+        open(BUILD_VENV_MARKER).read().strip() == sig
+    )
+    if os.path.exists(BUILD_VENV_PY) and marker_ok:
+        return BUILD_VENV_PY
+
+    base = _resolve_base_python()
+    print(f"[build] creating clean build venv (.venv_build) from {base}")
+    _rm(BUILD_VENV)
+    # `base` may be "py -3.12"; split into argv for subprocess.
+    base_argv = base.split()
+    subprocess.run([*base_argv, "-m", "venv", BUILD_VENV], check=True)
+    # Upgrade pip then install ONLY requirements.txt (CI-equivalent boundary).
+    subprocess.run(
+        [BUILD_VENV_PY, "-m", "pip", "install", "--upgrade", "pip"],
+        check=True, env=_clean_env(),
+    )
+    subprocess.run(
+        [BUILD_VENV_PY, "-m", "pip", "install", "-r", REQUIREMENTS],
+        check=True, env=_clean_env(),
+    )
+    with open(BUILD_VENV_MARKER, "w") as fh:
+        fh.write(sig)
+    print("[build] clean build venv ready")
+    return BUILD_VENV_PY
 
 
 def main() -> int:
@@ -47,21 +133,24 @@ def main() -> int:
         print(f"[build] ERROR: spec not found: {SPEC}", file=sys.stderr)
         return 1
 
+    py = _ensure_build_venv()
+
     # start from a clean output slot so a stale binary can never be reused
     _rm(DIST_DIR)
     _rm(STRAY_DIST)
 
     print(f"[build] PyInstaller spec : {SPEC}")
+    print(f"[build] build python     : {py}")
     print(f"[build] output           : {DIST_DIR}/Wordle-Strat-Console/")
     cmd = [
-        sys.executable, "-m", "PyInstaller",
+        py, "-m", "PyInstaller",
         SPEC,
         "--noconfirm",
         "--clean",
         f"--distpath={DIST_DIR}",
     ]
     print("[build] running:", " ".join(cmd))
-    rc = subprocess.call(cmd, cwd=REPO_ROOT)
+    rc = subprocess.call(cmd, cwd=REPO_ROOT, env=_clean_env())
     if rc != 0:
         print(f"[build] FAILED (pyinstaller exit {rc})", file=sys.stderr)
         return rc

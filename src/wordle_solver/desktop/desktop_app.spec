@@ -72,7 +72,19 @@ a = Analysis(
         # Stray transitive deps some local venvs resolve but the engine/UI
         # never use at runtime. Excluding keeps the bundle == clean CI build.
         "PIL", "pillow", "pywin32", "win32com", "httptools",
-    ],
+        # Full `pywin32` (the `win32*.pyd` / `pywintypes*.dll` surface) is NOT a
+        # runtime dependency: the GUI uses `pywin32-ctypes` (pinned in
+        # requirements.txt) and the engine needs neither. A polluted local venv
+        # that happens to have the full `pywin32` installed would otherwise leak
+        # these into the bundle, making it ~3 MB heavier and non-identical to the
+        # lean CI build (CI installs only requirements.txt). Exclude the whole
+        # submodule surface by name, not just the `pywin32` package root.
+        "win32api", "win32evtlog", "win32pdh", "win32gui", "win32process",
+        "win32con", "win32file", "win32security", "win32help", "win32inet",
+        "win32profile", "win32trace", "win32transaction", "win32ts",
+        "pythoncom", "pywintypes", "win32comext", "servicemanager", "isapi",
+        "axscript", "pywin",
+        ],
     noarchive=False,
     optimize=0,
 )
