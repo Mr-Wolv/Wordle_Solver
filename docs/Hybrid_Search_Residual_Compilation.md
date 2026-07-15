@@ -1,29 +1,29 @@
 # Hybrid Deterministic Search with Offline Optimal Residual Compilation: Exhaustive Closure Proofs for Finite Constraint-Satisfaction Games
 
-**Abstract.** We study deterministic decision-making in finite constraint-satisfaction games in which an agent must identify a hidden ground truth drawn from a known, bounded universe by sequentially querying a black-box oracle. Each query returns a structured observation that partitions the remaining hypotheses. Because the hypothesis space is finite and the observation function is deterministic and publicly known, the problem admits both an exact optimal solution (adversarial minimax over the hypothesis set) and a fast, explainable heuristic approximation. The central tension is that the exact solver is intractable as a general online procedure, while the heuristic — though efficient and near-optimal on average — fails on a small, *identifiable* set of residual instances.
+**Abstract.** We study deterministic decision-making in finite constraint-satisfaction games in which an agent must identify a hidden ground truth drawn from a known, bounded universe by sequentially querying a black-box oracle. Each query returns a structured observation that partitions the remaining hypotheses. Because the hypothesis space is finite and the observation function is deterministic and publicly known, the problem admits both an exact optimal solution (adversarial minimax over the hypothesis set) and a fast, explainable heuristic approximation. The central tension is that the exact solver is intractable as a general online procedure, while the heuristic, though efficient and near-optimal on average, fails on a small, *identifiable* set of residual instances.
 
-We present a hybrid framework that resolves this tension. A vectorized, information-theoretic heuristic (expected information gain penalized by worst-case partition size, with a posterior win-probability term) is the default online policy. Offline, we exhaustively enumerate the belief states reachable under the heuristic, detect the residual instances on which it violates the turn contract, and compile each residual cluster into a precomputed exact-minimax decision table. At runtime the live belief is matched against the compiled tables; on a match the engine defects from the heuristic to a provably-optimal move, otherwise it follows the heuristic. We enforce strict isolation across six mutually exclusive domains ({normal, hard} × {0, 1, 2 external hints}), prove each domain closes under a six-turn contract, and verify the claim through a cached, version-stamped closed-loop replay of **47,814** simulated games (zero failures, worst case six turns). The result is a solver that is simultaneously efficient, explainable, fully deterministic, and *provably complete* on every reachable instance. We report a quantitative architectural analysis: the compiled knowledge comprises 17,911 decision nodes (≈650 KB) covering a residual population of 30 words (1.30% of the universe), while 98.70% of the space is closed by the heuristic alone; the mean solve depth is 3.32 turns with an effective average branching factor of ≈10.3.
+We present a hybrid framework that resolves this tension. A vectorized, information-theoretic heuristic (expected information gain penalized by worst-case partition size, with a posterior win-probability term) is the default online policy. Offline, we exhaustively enumerate the belief states reachable under the heuristic, detect the residual instances on which it violates the turn contract, and compile each residual cluster into a precomputed exact-minimax decision table. At runtime the live belief is matched against the compiled tables; on a match the engine defects from the heuristic to a provably-optimal move, otherwise it follows the heuristic. We enforce strict isolation across six mutually exclusive domains ({normal, hard} × {0, 1, 2 external hints}), prove each domain closes under a six-turn contract, and verify the claim through a cached, version-stamped closed-loop replay of **47,814** simulated games (zero failures, worst case six turns). The result is a solver that is simultaneously efficient, explainable, fully deterministic, and *provably complete* on every reachable instance. We report a quantitative architectural analysis: the compiled knowledge comprises 17,911 decision nodes (≈644 KB) covering a residual population of 30 words (1.30% of the universe), while 98.70% of the space is closed by the heuristic alone; the mean solve depth is 3.32 turns with an effective average branching factor of ≈10.3.
 
 ---
 
 ## 1. Introduction
 
-Deterministic reasoning over finite spaces occupies a privileged position in artificial intelligence. Unlike continuous or open-world settings, finite problems admit exhaustive validation: every reachable state can, in principle, be visited, and every decision can be justified against a complete enumeration of outcomes. This property makes finite decision problems an ideal testbed for the scientific study of *hybrid search* — the combination of efficient approximative policies with exact optimal correction — and for the discipline of *knowledge compilation*, in which expensive inference is shifted offline so that online behavior reduces to a lookup.
+Deterministic reasoning over finite spaces occupies a privileged position in artificial intelligence. Unlike continuous or open-world settings, finite problems admit exhaustive validation: every reachable state can, in principle, be visited, and every decision can be justified against a complete enumeration of outcomes. This property makes finite decision problems an ideal testbed for the scientific study of *hybrid search*, the combination of efficient approximative policies with exact optimal correction, and for the discipline of *knowledge compilation*, in which expensive inference is shifted offline so that online behavior reduces to a lookup.
 
-We begin not with a game but with the abstract setting. Let a hidden state $s^\star$ be drawn from a finite, publicly known universe $\mathcal{C}$ of cardinality $N = |\mathcal{C}|$. An agent may, at each step $t = 1, 2, \dots, T$, issue a *query* $g_t$ from a context-dependent set of legal queries. The environment responds with a deterministic observation $o_t = \Phi(g_t, s^\star)$, where $\Phi$ is a fixed, public feedback function. The agent maintains a *belief state* $\mathcal{K}_t \subseteq \mathcal{C}$ — the set of hypotheses still consistent with all observations — and wins when $\mathcal{K}_t$ collapses to the singleton $\{s^\star\}$ and that hypothesis is subsequently uttered.
+We begin not with a game but with the abstract setting. Let a hidden state $s^\star$ be drawn from a finite, publicly known universe $\mathcal{C}$ of cardinality $N = |\mathcal{C}|$. An agent may, at each step $t = 1, 2, \dots, T$, issue a *query* $g_t$ from a context-dependent set of legal queries. The environment responds with a deterministic observation $o_t = \Phi(g_t, s^\star)$, where $\Phi$ is a fixed, public feedback function. The agent maintains a *belief state* $\mathcal{K}_t \subseteq \mathcal{C}$, the set of hypotheses still consistent with all observations, and wins when $\mathcal{K}_t$ collapses to the singleton $\{s^\star\}$ and that hypothesis is subsequently uttered.
 
 Two desiderata compete. **Completeness** demands identification within a hard turn budget $T_{\max}$ on *every* instance. **Efficiency** demands that per-step decision cost remain low, so the solver is usable interactively and scales to exhaustive verification. **Explainability** demands that each decision be interpretable as either a well-understood information-theoretic move or a provably-optimal one. **Reproducibility** demands byte-identical behavior across processes, threads, and hardware layouts.
 
-The exact solution is, in principle, available: the problem is a two-player zero-sum game in which the agent minimizes, and an adversarial nature maximizes, the number of queries required to force identification. But the reachable belief space is, in the worst case, exponential in $N$, and exact minimax is intractable as a general online procedure. The practical literature has therefore favored heuristics — entropy maximization, worst-case partition minimization, frequency/expected-value weighting — which are cheap and effective *on average* but lack a completeness guarantee.
+The exact solution is, in principle, available: the problem is a two-player zero-sum game in which the agent minimizes, and an adversarial nature maximizes, the number of queries required to force identification. But the reachable belief space is, in the worst case, exponential in $N$, and exact minimax is intractable as a general online procedure. The practical literature has therefore favored heuristics: entropy maximization, worst-case partition minimization, frequency/expected-value weighting, which are cheap and effective *on average* but lack a completeness guarantee.
 
 Our central thesis is that the heuristic and the exact solver need not be opposed. We retain the heuristic as the *default hot path* while eliminating its residual incompleteness through offline compilation. The contributions, each developed in a dedicated section, are:
 
-1. **Hybrid deterministic search architecture (§5–§6).** A deterministic, vectorized scoring policy blends expected information gain, worst-case partition size, and posterior win-probability into a single scalar utility with mode-dependent penalties. This is the online default; an exact minimax solver is invoked only where necessary.
+1. **Hybrid deterministic search architecture (§5 to §6).** A deterministic, vectorized scoring policy blends expected information gain, worst-case partition size, and posterior win-probability into a single scalar utility with mode-dependent penalties. This is the online default; an exact minimax solver is invoked only where necessary.
 2. **Selective offline knowledge compilation (§7).** We define the *residual region* as the set of belief states reachable under the heuristic for which the heuristic violates the turn contract. We prove this region is finite, small, and *isolatable*, and we precompute an exact minimax decision table for each residual cluster. Runtime reduces to a hash lookup against the compiled tables.
 3. **Hard-mode shredding via out-of-universe queries (§7.3).** We extend the legal query set for residual correction to include *auxiliary* dictionary words (outside the answer universe) that are consistent with all prior feedback, splitting otherwise-inseparable sibling clusters. We prove these queries are legal under the problem's hard-mode rule.
 4. **Strict domain isolation (§11).** The problem is partitioned into six mutually exclusive, collectively exhaustive domains, each a frozen specification referencing only its own configuration and tables, so that repairing one domain cannot regress another.
 5. **Exhaustive verification methodology (§13).** A closed-loop replay gate simulates every universe element under every legal configuration of each domain, proving 100% solvability within the turn budget (47,814 games, zero failures).
-6. **Quantitative architectural analysis (§14, §16).** We report measurable structural metrics — residual-state count, lookup-table coverage, decision reuse, candidate-set reduction, branching factor, heuristic-activation frequency, offline-knowledge size, and runtime-lookup frequency — analyzing the architecture itself, not only solver performance.
+6. **Quantitative architectural analysis (§14, §16).** We report measurable structural metrics: residual-state count, lookup-table coverage, decision reuse, candidate-set reduction, branching factor, heuristic-activation frequency, offline-knowledge size, and runtime-lookup frequency, analyzing the architecture itself, not only solver performance.
 7. **Reproducible benchmark framework (§17).** Deterministic execution, version-stamped caching, in-memory-only state, and static artifacts make every reported result regenerable from the committed repository.
 
 ---
@@ -99,7 +99,7 @@ where $\Delta$ is the set of six domains (§4, §11).
 
 We position this work against the literature not as a survey but as a claim about *where it belongs*: at the intersection of **knowledge compilation** and **hybrid search**, applied to finite **constraint-satisfaction / interactive-diagnosis** problems.
 
-**Entropy maximization and expected information gain.** Shannon-entropy ranking of queries (Berger et al.; the standard "best guess" heuristic) minimizes *expected* query count via $H(g\mid\mathcal{K}) = -\sum_b p_b\log_2 p_b$. *Similarity:* our utility's $H$ term is exactly this. *Difference:* entropy is a mean-case objective with no worst-case guarantee; a two-element pool can strand the higher-frequency sibling. *Assumption:* beliefs are diffuse enough that expected reduction dominates. *Limitation:* fatal on tight sibling clusters — precisely the residual we compile away.
+**Entropy maximization and expected information gain.** Shannon-entropy ranking of queries (Berger et al.; the standard "best guess" heuristic) minimizes *expected* query count via $H(g\mid\mathcal{K}) = -\sum_b p_b\log_2 p_b$. *Similarity:* our utility's $H$ term is exactly this. *Difference:* entropy is a mean-case objective with no worst-case guarantee; a two-element pool can strand the higher-frequency sibling. *Assumption:* beliefs are diffuse enough that expected reduction dominates. *Limitation:* fatal on tight sibling clusters, precisely the residual we compile away.
 
 **Minimax / worst-case search.** The adversarial formulation (Bernardini & Goldberg; Bonthron's optimal Wordle analysis) minimizes the largest resulting bucket and yields a guaranteed depth bound. *Similarity:* our offline `MINIMAX` and the hard-mode $W$ penalty are minimax in spirit. *Difference:* full minimax is exponential online; we apply it only to the residual region. *Strength:* completeness. *Limitation:* intractable as a default.
 
@@ -111,7 +111,7 @@ We position this work against the literature not as a survey but as a claim abou
 
 **Constraint satisfaction (CSP) & interactive search.** Viewing $\mathcal{K}_t$ as the solution set of a dynamically growing CSP, each observation adds a constraint. *Similarity:* belief update is constraint propagation. *Difference:* the constraint language is the fixed $\Phi$; we do not generalize to arbitrary constraints. *Strength:* exact propagation is trivial (set intersection).
 
-**Knowledge compilation (Darwiche & Marquis).** The discipline of converting a knowledge base into a tractable form (OBDD, d-DNNF) so that queries are cheap. *Similarity:* our residual tables are a compiled artifact queried by exact belief-key lookup — a direct instance of the compilation paradigm. *Difference:* we compile *only the residual region*, not the whole theory, exploiting that the heuristic already resolves the vast majority of states optimally. This *selective* compilation is, we argue, the paper's core methodological contribution.
+**Knowledge compilation (Darwiche & Marquis).** The discipline of converting a knowledge base into a tractable form (OBDD, d-DNNF) so that queries are cheap. *Similarity:* our residual tables are a compiled artifact queried by exact belief-key lookup, a direct instance of the compilation paradigm. *Difference:* we compile *only the residual region*, not the whole theory, exploiting that the heuristic already resolves the vast majority of states optimally. This *selective* compilation is, we argue, the paper's core methodological contribution.
 
 **Hybrid search.** Combining exact and heuristic search is classical (e.g., IDA* with admissible heuristics; verifier-aided search). *Similarity:* our hybrid defects from heuristic to exact on residual detection. *Difference:* the defection trigger is *offline-identified* (not online uncertainty estimation), which is what makes the guarantee static and verifiable.
 
@@ -129,14 +129,14 @@ Every major architectural decision is justified below along five axes: *motivati
 - **Alternative.** Use the full $12{,}972$-word dictionary as the candidate set and build a $12{,}972 \times 12{,}972$ matrix.
 - **Why insufficient.** The extra $\approx 10{,}657$ non-answers are never the ground truth; including them inflates the matrix $31\times$ in cells and slows every scoring pass, while contributing no decision value (a non-answer can be scored on the fly when used as a shredder).
 - **Tradeoff.** Slightly more code paths (baked matrix for answers, on-the-fly row for shredders) in exchange for a $31\times$ smaller matrix (10.7 MB vs $\approx 330$ MB) and faster loads.
-- **Evidence.** Matrix is exactly $2315 \times 2315$ int16 = 10,718,850 bytes, memory-mapped; the on-the-fly row is unit-tested against it (test_lexicon).
+- **Evidence.** Matrix is exactly $2315 \times 2315$ int16 = 10,718,450 bytes, memory-mapped; the on-the-fly row is unit-tested against it (test_lexicon).
 
 ### 4.2 Vectorized Entropy + Worst-Case Utility as the Default
 
 - **Motivation.** Need a per-step decision that is cheap, explainable, and near-optimal on diffuse beliefs.
 - **Alternative A.** Pure expected information gain. **Alternative B.** Pure minimax every step.
 - **Why insufficient.** A lacks any worst-case guarantee (fatal on sibling clusters); B is exponentially expensive online.
-- **Tradeoff.** Blending $H$ with a worst-case penalty $W$ sacrifices a little mean-case optimality for a worst-case safety margin — the exact margin that, combined with compilation, yields completeness.
+- **Tradeoff.** Blending $H$ with a worst-case penalty $W$ sacrifices a little mean-case optimality for a worst-case safety margin, the exact margin that, combined with compilation, yields completeness.
 - **Evidence.** The heuristic alone closes 98.70% of the universe (§14, §16); the residual 1.30% is precisely where the blended utility's worst-case term is insufficient and the compiled correction engages.
 
 ### 4.3 Hybrid Defection to Compiled Optimal Tables
@@ -144,7 +144,7 @@ Every major architectural decision is justified below along five axes: *motivati
 - **Motivation.** Eliminate the heuristic's residual incompleteness without paying exact-search cost on the common case.
 - **Alternative.** Run minimax at every step (complete but infeasible) or accept heuristic failures (feasible but incomplete).
 - **Why insufficient.** The former is too slow; the latter violates the contract.
-- **Tradeoff.** A one-time offline cost (minutes–hours of compilation) traded for $O(1)$ online lookup and a static completeness guarantee.
+- **Tradeoff.** A one-time offline cost (minutes to hours of compilation) traded for $O(1)$ online lookup and a static completeness guarantee.
 - **Evidence.** 17,911 compiled decision nodes (§14) cover every residual cluster; runtime lookup is a frozenset hash.
 
 ### 4.4 Exact-Belief Keying (Isolation)
@@ -251,19 +251,19 @@ function DECIDE(K, t, δ):
         if K is an exact key in Ψ_δ:
             return Ψ_δ[K]                       # provably-optimal move
     if t == 1 and δ permits split-opening:
-        return argmin_{g∈G(K)} max_b |B_b(g,K)|   # 1-ply worst-case opener
+        return argmin_{g in G(K)} max_b |B_b(g,K)|   # 1-ply worst-case opener
     if |K| <= 3:
-        return argmax_{s∈K} P(s = s* | K)        # endgame: utter most probable
+        return argmax_{s in K} P(s = s* | K)        # endgame: utter most probable
     if hard and 2 < |K| <= 12:
         return 1-ply worst-case splitter over K
-    return argmax_{g∈G(K)} U(g | K, t)           # default heuristic
+    return argmax_{g in G(K)} U(g | K, t)           # default heuristic
 ```
 
 **Why this ordering.** The compiled lookup is $O(1)$ and only ever *helps* (it returns a move proven optimal for that exact belief), so it is safe to consult first. The split-opener and endgame rules are regime-specific overrides with their own correctness arguments (§10, §11). The heuristic is the terminal default.
 
 ### 5.3 Exact Minimax (Shared Solver)
 
-Both the offline compiler and the online residual fallback invoke one exact minimax routine — a single source of truth preventing online/offline drift.
+Both the offline compiler and the online residual fallback invoke one exact minimax routine, a single source of truth preventing online/offline drift.
 
 ```
 function MINIMAX(M, S, k):
@@ -293,7 +293,7 @@ The search changes strategy as a function of *belief size* and *domain authoriza
 
 **Heuristic phase (large belief).** When $m$ is large, the entropy-plus-worst-case utility efficiently drives rapid belief collapse. Expected information gain is near-optimal here: the belief is diffuse, bucket sizes are informative, and the marginal cost of an imperfect split is low. The worst-case penalty $W$ provides a safety margin without dominating.
 
-**Residual detection (compiled lookup).** Offline analysis (§7) has already identified the finite set of belief states on which the heuristic fails. At each step the controller tests exact membership of $\mathcal{K}$ against the compiled tables. On a match it **defects** to the optimal move — the *optimal correction* step that converts a would-be failure into a guaranteed win without altering heuristic behavior elsewhere.
+**Residual detection (compiled lookup).** Offline analysis (§7) has already identified the finite set of belief states on which the heuristic fails. At each step the controller tests exact membership of $\mathcal{K}$ against the compiled tables. On a match it **defects** to the optimal move, the *optimal correction* step that converts a would-be failure into a guaranteed win without altering heuristic behavior elsewhere.
 
 **Optimal correction (small-pool minimax).** For small pools (e.g., $m \le 24$ no-hint, $m \le 320$ hard 2-hint) intersecting a known residual set, the engine runs a bounded minimax *online* as a fallback when the precise belief is off-table. Because $k = T_{\max} - t + 1$ is small and the pool is tiny, this exact solve is milliseconds-fast and is attempted only for words that can genuinely need it.
 
@@ -307,7 +307,7 @@ The search changes strategy as a function of *belief size* and *domain authoriza
 
 ### 7.1 The Pattern Matrix
 
-The observation function is precomputed into a static integer matrix $\mathbf{M} \in \mathbb{Z}^{N \times N}$ with $\mathbf{M}_{i,j} = \Phi(c_i, c_j)$. Stored as 16-bit integers, the matrix occupies exactly 10,718,850 bytes (10.7 MB) and is **memory-mapped** at runtime (no full resident load). For a query $g \notin \mathcal{C}$ (a *shredder*), the pattern row is computed on the fly by a vectorized two-pass algorithm (greens, then yellows with letter consumption), verified to agree with $\mathbf{M}$ on all in-universe pairs.
+The observation function is precomputed into a static integer matrix $\mathbf{M} \in \mathbb{Z}^{N \times N}$ with $\mathbf{M}_{i,j} = \Phi(c_i, c_j)$. Stored as 16-bit integers, the matrix occupies exactly 10,718,450 bytes (10.7 MB) and is **memory-mapped** at runtime (no full resident load). For a query $g \notin \mathcal{C}$ (a *shredder*), the pattern row is computed on the fly by a vectorized two-pass algorithm (greens, then yellows with letter consumption), verified to agree with $\mathbf{M}$ on all in-universe pairs.
 
 ### 7.2 Residual Cluster Identification
 
@@ -321,14 +321,14 @@ For each residual word we enumerate its admissible hint pairs and, for each resu
 
 ### 7.3 Hard-Mode Shredding
 
-A subtle incompleteness arises in *hard* mode with no hints: the legal-query set is confined to $\mathcal{K}$ itself, and tight sibling clusters (e.g., the `?ATCH` family) may require peeling one sibling per turn, exhausting the budget. We extend the correction query set to include **shredder words** — dictionary words outside $\mathcal{C}$ that are *legal* under the hard-mode rule (consistent with all prior feedback $\Phi(g_i, \text{shredder}) = o_i$). These auxiliary queries split sibling clusters that pure in-universe guessing cannot. Legality is enforced by construction: a shredder is admitted only if its pattern against every prior guess matches the recorded observation. This raises the effective branching of the correction phase without violating the rules.
+A subtle incompleteness arises in *hard* mode with no hints: the legal-query set is confined to $\mathcal{K}$ itself, and tight sibling clusters (e.g., the `?ATCH` family) may require peeling one sibling per turn, exhausting the budget. We extend the correction query set to include **shredder words**, dictionary words outside $\mathcal{C}$ that are *legal* under the hard-mode rule (consistent with all prior feedback $\Phi(g_i, \text{shredder}) = o_i$). These auxiliary queries split sibling clusters that pure in-universe guessing cannot. Legality is enforced by construction: a shredder is admitted only if its pattern against every prior guess matches the recorded observation. This raises the effective branching of the correction phase without violating the rules.
 
 ### 7.4 Turn-1 Opening Specialists
 
 - **Split opener (2-hint domains).** Greedy's entropy opener can strand a tight sibling cluster (e.g., `grape/grate/grave/graze/grace`). We precompute, per 2-hint domain, the turn-1 guess minimizing the largest resulting bucket over the hint-constrained pool, breaking clusters before they form.
 - **Family-safe opener (`h` hint).** For the hard 2-hint domain, the single word `abhor` (universe index 5) is proven offline to solve *every* `h`-containing answer within the contract. Because the hint literally is `h`, this override can only affect `h`-words, closing the otherwise-poisoned `hatch` cluster while leaving all other families untouched.
 
-### 7.5 Why Offline–Online Separation Helps
+### 7.5 Why Offline-Online Separation Helps
 
 The compilation shifts exponential cost to a one-time, version-controlled artifact. Runtime then performs (a) a constant-time frozenset hash lookup for residual defection, (b) an $O(|\mathcal{G}|\cdot m)$ vectorized heuristic score when no defection occurs. The exact minimax is invoked *only* for the handful of small-pool residual words, where it is cheap. Consequently the online solver is both provably complete and interactive-fast.
 
@@ -397,7 +397,7 @@ We state formally the properties the implementation supports. Each is directly v
 
 **Proposition 5 (Completeness / Closure).** For every $s^\star \in \mathcal{C}$ and every legal configuration $\delta \in \Delta$, $\text{turns}_{\hat\pi}(s^\star,\delta) \le T_{\max}$.
 
-*Intuition.* Non-residual instances are solved by the heuristic (verified by exhaustive replay); residual instances belong to some $\mathcal{R}_\delta$ and are covered by Proposition 3 or by bounded online minimax (which returns a move only if one exists within $k$). *Discussion.* The union of the three online paths is exhaustive over reachable instances. *Implication.* 100% solvability — the central claim (§13, §16).
+*Intuition.* Non-residual instances are solved by the heuristic (verified by exhaustive replay); residual instances belong to some $\mathcal{R}_\delta$ and are covered by Proposition 3 or by bounded online minimax (which returns a move only if one exists within $k$). *Discussion.* The union of the three online paths is exhaustive over reachable instances. *Implication.* 100% solvability, the central claim (§13, §16).
 
 **Proposition 6 (Termination).** Every game reaches a win or a budget-exhaustion state in $\le T_{\max}$ steps.
 
@@ -405,7 +405,7 @@ We state formally the properties the implementation supports. Each is directly v
 
 **Proposition 7 (Domain Isolation).** For domains $\delta \neq \delta'$, the dispatch and tuning of $\delta$ reference no state of $\delta'$.
 
-*Intuition.* Each `ModeSpec` is frozen and self-contained. *Discussion.* Repairs to one domain cannot regress another — essential for incremental, safe improvement. *Implication.* The 100% guarantee holds *per domain*, independently verifiable.
+*Intuition.* Each `ModeSpec` is frozen and self-contained. *Discussion.* Repairs to one domain cannot regress another, essential for incremental, safe improvement. *Implication.* The 100% guarantee holds *per domain*, independently verifiable.
 
 **Proposition 8 (Reproducibility of Verification).** The exhaustive gate's output is a deterministic function of (engine sources, data artifacts, mode logic); it is invariant to run order and prior runs.
 
@@ -435,15 +435,15 @@ We separate offline (one-time, amortized) from online (per-step, interactive) co
 
 - **Preprocessing (matrix).** Computing $\mathbf{M}$ is $O(N^2)$ pattern evaluations, performed once; the artifact is 10.7 MB.
 - **Proof generation (residual identification).** Replaying the heuristic $N$ times per domain (plus hint enumerations) costs $O(T_{\max}\cdot|\mathcal{G}|\cdot N)$ per replay with matrix lookups. Across six domains this is the dominant one-time cost (hours, parallelizable).
-- **Compilation (table building).** `MINIMAX` is memoized on (belief-set, budget). Because residual clusters are tiny (aggregate 17,911 nodes; largest single table 17,369 nodes), the reachable sub-belief DAG is small and compilation completes in minutes–hours per cluster, dominated by the no-hint hard shredder trees.
-- **Optimization objective.** The offline goal is to *minimize worst-case depth* to $\le T_{\max}$; this is exactly the `MINIMAX` value being driven below the budget. No gradient or continuous optimization is involved — it is exact discrete search over a small space.
+- **Compilation (table building).** `MINIMAX` is memoized on (belief-set, budget). Because residual clusters are tiny (aggregate 17,911 nodes; largest single table 17,369 nodes), the reachable sub-belief DAG is small and compilation completes in minutes to hours per cluster, dominated by the no-hint hard shredder trees.
+- **Optimization objective.** The offline goal is to *minimize worst-case depth* to $\le T_{\max}$; this is exactly the `MINIMAX` value being driven below the budget. No gradient or continuous optimization is involved, it is exact discrete search over a small space.
 
 ### 12.2 Online Complexity
 
 - **Heuristic evaluation.** Per step, the bucket histogram for every $g \in \mathcal{G}(\mathcal{K})$ is computed via a single scatter over an $(|\mathcal{G}| \times m)$ pattern array: $O(|\mathcal{G}|\cdot m)$. With $|\mathcal{G}| \le N$, $m \le N$, this is $O(N^2)$ worst-case but empirically a few milliseconds due to vectorization and rapid belief collapse.
 - **Candidate reduction.** Each step shrinks $m$ by the effective branching factor (≈10.3, §16), so $m$ falls geometrically; later steps are cheaper.
 - **Lookup (residual defection).** $O(1)$ hash on the frozenset $\mathcal{K}$; attempted every step but positive only on residual beliefs.
-- **Runtime execution (bounded minimax fallback).** $O(2^m)$ worst-case theoretically, but bounded in practice by $m \le 24$–$320$ and small budget, yielding sub-second solves on the ≤30 residual words.
+- **Runtime execution (bounded minimax fallback).** $O(2^m)$ worst-case theoretically, but bounded in practice by $m \le 24$ to $320$ and small budget, yielding sub-second solves on the ≤30 residual words.
 
 ### 12.3 Tradeoffs
 
@@ -451,19 +451,19 @@ We separate offline (one-time, amortized) from online (per-step, interactive) co
 |---|---|---|
 | Dominant cost | Residual `MINIMAX` over $\mathcal{R}_\delta$ | Vectorized heuristic score $O(\|\mathcal{G}\|\cdot m)$ |
 | Worst case | Exponential in *cluster* size (tiny) | $O(N^2)$ (vectorized, ms) |
-| Memory | 10.7 MB matrix + ≈650 KB tables | $O(N)$ working set |
+| Memory | 10.7 MB matrix + ≈644 KB tables | $O(N)$ working set |
 | Determinism | Static artifacts, version-stamped | Frozenset lookup + stable tie-break |
 | Preprocessing/runtime trade | Expensive once → cheap forever | Lookup-dominated, interactive |
 
-**Memory/runtime tradeoff.** The 10.7 MB matrix is memory-mapped (not fully resident), exchanging a minor page-fault cost for a $31\times$ reduction versus the full-dictionary matrix. The compiled tables (≈650 KB) trade disk/initial-load for $O(1)$ online correctness.
+**Memory/runtime tradeoff.** The 10.7 MB matrix is memory-mapped (not fully resident), exchanging a minor page-fault cost for a $31\times$ reduction versus the full-dictionary matrix. The compiled tables (≈644 KB) trade disk/initial-load for $O(1)$ online correctness.
 
 ---
 
 ## 13. Verification Methodology
 
-We do not "test"; we **enumerate**. Correctness is established by complete closed-loop replay — and we argue this exhaustive verification is itself a methodological contribution, because it converts a per-instance completeness claim into a *finitely checkable* one.
+We do not "test"; we **enumerate**. Correctness is established by complete closed-loop replay, and we argue this exhaustive verification is itself a methodological contribution, because it converts a per-instance completeness claim into a *finitely checkable* one.
 
-**Exhaustive state-space evaluation.** For each domain $\delta \in \Delta$, every universe element $s^\star \in \mathcal{C}$ is played against the *real* decision loop — query issued, observation computed by $\Phi$, belief updated — under *every* legal hint configuration the word admits. Each word "passes" its domain only if *all* its hint enumerations solve within $T_{\max}$. This yields, summing across domains, **47,814** simulated games.
+**Exhaustive state-space evaluation.** For each domain $\delta \in \Delta$, every universe element $s^\star \in \mathcal{C}$ is played against the *real* decision loop, query issued, observation computed by $\Phi$, belief updated, under *every* legal hint configuration the word admits. Each word "passes" its domain only if *all* its hint enumerations solve within $T_{\max}$. This yields, summing across domains, **47,814** simulated games.
 
 **Deterministic replay.** Because of Proposition 2, replay is order-independent and reproducible; the gate uses a single process-local engine reset between games (no cross-game state leakage) and a `ProcessPoolExecutor` only for the one-time cold run.
 
@@ -471,7 +471,7 @@ We do not "test"; we **enumerate**. Correctness is established by complete close
 
 **Version-stamped cache.** The gate hashes engine source, data artifacts, and mode logic (SHA-256, truncated to 16 hex); results are cached under that hash. A cold run recomputes (≈18 minutes); subsequent runs verify in milliseconds. The cache is git-ignored and forced cold in CI, so a green run is a genuine recompute, never a cached pass. The cache is *monotonic*: a full-corpus run supersedes a slice, and a slice can never masquerade as a full proof (coverage is checked by set inclusion).
 
-**Benchmark generation.** A companion report (`EXHAUSTIVE_ENUMERATION.csv/.txt`) renders all 47,814 games with per-turn tile colors — an auditable transcript of the proof, not an input to it.
+**Benchmark generation.** A companion report (`EXHAUSTIVE_ENUMERATION.csv/.txt`) renders all 47,814 games with per-turn tile colors, an auditable transcript of the proof, not an input to it.
 
 **Frozen-bundle self-play.** The shipped executable is built from committed source, launched, and self-plays the hard no-hint residuals through its HTTP API, proving the *artifact* behaves identically to the *source* (covering the default, no-override launch path).
 
@@ -493,9 +493,9 @@ The universe contains $N = 2{,}315$ official answers drawn from a dictionary of 
 | $\delta_4$ hard_1 | Hard | 1 | 10,767 |
 | $\delta_5$ normal_2 | Normal | 2 (every V×C pair) | 10,825 |
 | $\delta_6$ hard_2 | Hard | 2 | 10,825 |
-| **Total** | — | — | **47,814** |
+| **Total** | n/a | n/a | **47,814** |
 
-The 1-hint and 2-hint counts exceed $N$ because each word is replayed under *every* legal hint set it admits. Note $10{,}825 > 10{,}767$: for words containing both vowels and consonants, the number of vowel×consonant pairs ($|V|\cdot|C|$) exceeds the number of single-letter hints ($|V|+|C|$), so 2-hint enumeration is strictly more demanding — a stronger verification burden, not a weaker one.
+The 1-hint and 2-hint counts exceed $N$ because each word is replayed under *every* legal hint set it admits. Note $10{,}825 > 10{,}767$: for words containing both vowels and consonants, the number of vowel×consonant pairs ($|V|\cdot|C|$) exceeds the number of single-letter hints ($|V|+|C|$), so 2-hint enumeration is strictly more demanding, a stronger verification burden, not a weaker one.
 
 ### 14.2 Architectural Statistics
 
@@ -513,13 +513,13 @@ Beyond solver performance, we measure the architecture itself (Reviewer 8).
 | 2-hint tree | 5 families / 38 nodes | All V×C pairs |
 | Residual words (union) | 30 | 1.30% of universe |
 | Heuristic-only words | 2,285 | 98.70% of universe |
-| Compiled artifact size | ≈650 KB | 619+8+15+2 KB |
+| Compiled artifact size | ≈644 KB | 619+8+15+2 = 644 KB |
 | Matrix size | 10.7 MB (mmap) | $2315\times2315$ int16 |
 | Runtime lookup frequency | 1× per step (O(1) hash) | Positive activation only on residual beliefs |
 | Residual activation frequency | ≤1.30% of words, late-turn | Compiled path is the exception |
 | Effective avg branching factor | ≈10.3 | $N^{1/\bar\tau}$, $\bar\tau=3.32$ |
 
-**Reading the table.** The architecture is *compression-heavy on the common case*: 98.70% of the universe never activates a compiled node; the 17,911-node compiled knowledge exists solely to rescue the 1.30% residual tail. The total offline knowledge (≈650 KB) is two orders of magnitude smaller than the pattern matrix, confirming that selective compilation (not whole-space compilation) is what makes the approach tractable. Decision reuse is therefore near-total: the heuristic's scoring policy is the single reused decision procedure across 47,814 games, with the compiled tables acting as a thin, exact safety net.
+**Reading the table.** The architecture is *compression-heavy on the common case*: 98.70% of the universe never activates a compiled node; the 17,911-node compiled knowledge exists solely to rescue the 1.30% residual tail. The total offline knowledge (≈644 KB) is two orders of magnitude smaller than the pattern matrix, confirming that selective compilation (not whole-space compilation) is what makes the approach tractable. Decision reuse is therefore near-total: the heuristic's scoring policy is the single reused decision procedure across 47,814 games, with the compiled tables acting as a thin, exact safety net.
 
 ### 14.3 Headline Result
 
@@ -542,13 +542,13 @@ Every reported number is interpreted below.
 
 **Why the average behaves as observed (mean 3.32 turns).** The effective average branching factor is $N^{1/\bar\tau} \approx 2315^{1/3.32} \approx 10.3$: each well-chosen query eliminates ~90% of the remaining hypotheses on average, so the belief collapses from 2,315 to 1 in roughly $\log_{10.3}(2315) \approx 3.3$ steps. This is the expected behavior of an entropy-driven heuristic on a diffuse space.
 
-**Why Hard Mode differs so little.** Measured mean turns: normal_0 = 3.6125, hard_0 = 3.6242 (hard is *marginally slower* by 0.012 turns — within residual noise); normal_1 = 3.4355, hard_1 = 3.3920 (hard is actually *faster* by 0.043); normal_2 = 3.1583, hard_2 = 3.1596 (equal). The hard-mode constraint — restricting queries to the current belief — is nearly cost-free because (a) the scoring function's hard-mode worst-case penalty and (b) the hard small-pool splitter recover any loss by minimizing stalls in endgames. Net: the restricted query set does not materially raise mean depth.
+**Why Hard Mode differs so little.** Measured mean turns: normal_0 = 3.6125, hard_0 = 3.6242 (hard is *marginally slower* by 0.012 turns, within residual noise); normal_1 = 3.4355, hard_1 = 3.3920 (hard is actually *faster* by 0.043); normal_2 = 3.1583, hard_2 = 3.1596 (equal). The hard-mode constraint, restricting queries to the current belief, is nearly cost-free because (a) the scoring function's hard-mode worst-case penalty and (b) the hard small-pool splitter recover any loss by minimizing stalls in endgames. Net: the restricted query set does not materially raise mean depth.
 
 **Why hints reduce mean turns (3.61 → 3.16).** External constraint revelation shrinks the *initial* belief $\mathcal{K}_0$ before turn 1, so fewer turns are needed on average. This is an acceleration, not a requirement: no-hint already closes at 100%.
 
 **Why heuristic search dominates.** 98.70% of the universe (2,285 words) is solved purely by the blended utility; the residual 1.30% is exactly where the worst-case penalty alone is insufficient. Heuristic dominance is expected: on diffuse beliefs, expected information gain is near-optimal, and the $W$-penalty keeps the worst case bounded.
 
-**Why residual optimization activates only when necessary.** The residual region is *defined* as the belief states where the heuristic fails (§7.2). Because tables are keyed on the exact belief (Proposition 3), the compiled path fires only there — it cannot fire elsewhere, and it is skipped entirely for the 98.70% heuristic-only words. This is why the online cost stays at the heuristic level for nearly all games.
+**Why residual optimization activates only when necessary.** The residual region is *defined* as the belief states where the heuristic fails (§7.2). Because tables are keyed on the exact belief (Proposition 3), the compiled path fires only there, it cannot fire elsewhere, and it is skipped entirely for the 98.70% heuristic-only words. This is why the online cost stays at the heuristic level for nearly all games.
 
 **Why deterministic search remains effective.** The stable tie-break, in-memory-only turn-1 cache, and static matrix (Propositions 2, 8) eliminate the non-determinism that would otherwise make verification order-dependent. Determinism is not incidental; it is what makes the 47,814-game certificate reproducible.
 
@@ -565,25 +565,25 @@ Every reported number is interpreted below.
 | normal_2 | 10,825 | 3.1583 | 104 / 2540 / 4778 / 2581 / 585 / 237 |
 | hard_2 | 10,825 | 3.1596 | 104 / 2565 / 4749 / 2566 / 588 / 253 |
 
-**Interpretation.** Hints shift mass leftward (more 1- and 2-turn solves, e.g., 2-hint has 104 one-turn solves vs 1 in 0-hint) and lower the mean by ~0.45 turns. Hard mode at 0-hint shows slightly more 2-turn solves (149 vs 75) and slightly more 6-turn solves (65 vs 52) than normal — the restricted query set trades a few early wins for a few late stalls — but the mean difference is negligible, confirming the scoring/specialist compensation. At 1-hint hard is *faster*, suggesting the worst-case penalty more than compensates for the restricted set when an external hint is present.
+**Interpretation.** Hints shift mass leftward (more 1- and 2-turn solves, e.g., 2-hint has 104 one-turn solves vs 1 in 0-hint) and lower the mean by ~0.45 turns. Hard mode at 0-hint shows slightly more 2-turn solves (149 vs 75) and slightly more 6-turn solves (65 vs 52) than normal, the restricted query set trades a few early wins for a few late stalls, but the mean difference is negligible, confirming the scoring/specialist compensation. At 1-hint hard is *faster*, suggesting the worst-case penalty more than compensates for the restricted set when an external hint is present.
 
 ---
 
 ## 16. Discussion
 
-**Strengths.** The framework is efficient (vectorized heuristic default), explainable (every move is either an information-theoretic score or a provably-optimal lookup), deterministic (reproducible to the byte), and *complete* (every reachable instance closes). Selective compilation confines exponential cost to a tiny, well-characterized region (1.30% of the universe, ≈650 KB of tables).
+**Strengths.** The framework is efficient (vectorized heuristic default), explainable (every move is either an information-theoretic score or a provably-optimal lookup), deterministic (reproducible to the byte), and *complete* (every reachable instance closes). Selective compilation confines exponential cost to a tiny, well-characterized region (1.30% of the universe, ≈644 KB of tables).
 
 **Limitations.** The method is specialized to finite, deterministic, publicly-known observation functions. It does not address adversarial or noisy oracles, continuous spaces, or unknown universes. The completeness proof is contingent on the exhaustive gate covering the *entire* universe; if the universe changes, the residual set must be re-enumerated (the version-stamped cache enforces this automatically). The hard-mode shredder relies on the full 12,972-word dictionary; a different dictionary alters available auxiliary queries.
 
-**Tradeoffs.** We trade a little expected-case optimality (entropy alone minimizes mean turns) for a *worst-case guarantee* (the $W$ penalty). The experimental result — 100% closure at the six-turn bound with only a 0.012-turn mean penalty in hard mode — confirms the trade is worthwhile. We also trade offline compute (hours of compilation) for online simplicity and a static guarantee.
+**Tradeoffs.** We trade a little expected-case optimality (entropy alone minimizes mean turns) for a *worst-case guarantee* (the $W$ penalty). The experimental result, 100% closure at the six-turn bound with only a 0.012-turn mean penalty in hard mode, confirms the trade is worthwhile. We also trade offline compute (hours of compilation) for online simplicity and a static guarantee.
 
 **Generalization.** The same architecture applies to any finite hypothesis-identification game with a deterministic, computable observation function:
-- *Mastermind* variants (different feedback alphabets / code lengths) — direct; Knuth's tree becomes a residual table.
-- *Deterministic planning* — the belief-as-set formulation mirrors plan-compilation.
-- *Troubleshooting / diagnosis systems* — symptoms are observations $\Phi$; fixes are queries.
-- *Interactive search* (e.g.,二十 questions-style) — the entropy term is the natural default.
-- *Finite CSPs* — belief update is exact constraint propagation.
-- *Decision support* — the compiled safety net guarantees no instance is left unsolved.
+- *Mastermind* variants (different feedback alphabets / code lengths, direct; Knuth's tree becomes a residual table.
+- *Deterministic planning*: the belief-as-set formulation mirrors plan-compilation.
+- *Troubleshooting / diagnosis systems*: symptoms are observations $\Phi$; fixes are queries.
+- *Interactive search* (e.g., twenty-questions-style): the entropy term is the natural default.
+- *Finite CSPs*: belief update is exact constraint propagation.
+- *Decision support*: the compiled safety net guarantees no instance is left unsolved.
 
 The only requirement for the completeness guarantee is that the residual region be enumerable offline.
 
@@ -601,11 +601,11 @@ A researcher must be able to regenerate every reported result. The repository is
 
 **Preprocessing.** The pattern matrix is precomputed once (`build_matrix`); the four residual tables are produced by the offline generators (`build_residual_optimal*`, `build_nohint_tree`), each invoking the *same* `MINIMAX` as the live engine, preventing drift. The `t1_h_opening` spec is proven by exhaustive search over the `h`-family.
 
-**Benchmark generation.** `enumerate_exhaustive` replays all 47,814 games and writes `EXHAUSTIVE_ENUMERATION.csv/.txt` — the human-readable proof transcript. The `benchmark` tool reports mean turns, distribution, and throughput on samples.
+**Benchmark generation.** `enumerate_exhaustive` replays all 47,814 games and writes `EXHAUSTIVE_ENUMERATION.csv/.txt`, the human-readable proof transcript. The `benchmark` tool reports mean turns, distribution, and throughput on samples.
 
 **Verification scripts.** `tests/test_game_contract.py` is the load-bearing 100% proof (cached, version-stamped, cold in CI). `tests/test_frozen_bundle.py` builds and self-plays the shipped executable. Both run under `pytest` with `-W error` (zero warnings enforced).
 
-**Reproducible experiments.** The full gate: `pytest -m exhaustive` (≈18 min cold, ms warm). The fast suite: `pytest -m "not exhaustive"`. The enumeration report: `python -m wordle_solver.tools.enumerate_exhaustive`. Every number in §14–§15 is regenerable from committed source + data.
+**Reproducible experiments.** The full gate: `pytest -m exhaustive` (≈18 min cold, ms warm). The fast suite: `pytest -m "not exhaustive"`. The enumeration report: `python -m wordle_solver.tools.enumerate_exhaustive`. Every number in §14 to §15 is regenerable from committed source + data.
 
 **Deterministic outputs.** Because execution is deterministic and the cache is version-stamped and monotonic, re-running yields identical artifacts; divergence would itself signal a regression (caught by CI).
 
@@ -625,29 +625,29 @@ A researcher must be able to regenerate every reported result. The repository is
 
 ## 19. Conclusion
 
-We have presented a hybrid deterministic search framework for finite constraint-satisfaction games that combines an efficient, explainable information-theoretic heuristic with offline-compiled exact-optimal correction. By identifying and compiling only the *residual region* — the small set of belief states on which the heuristic fails — the framework achieves what neither component achieves alone: interactive efficiency *and* exhaustive completeness. We formalized the belief-space search, the composite utility, the shared minimax solver, and the partial compilation strategy; we proved termination, determinism, and per-domain closure; and we verified the claims through complete closed-loop enumeration of **47,814** games across six strictly-isolated domains, with zero failures and a worst case of six turns. A quantitative architectural analysis showed that 98.70% of the universe is closed by the heuristic alone, with 17,911 compiled decision nodes (≈650 KB) sufficing to rescue the residual 1.30%. The work demonstrates that, for finite deterministic decision problems, *verifiable optimality* is attainable not by abandoning heuristics but by compiling away their residuals.
+We have presented a hybrid deterministic search framework for finite constraint-satisfaction games that combines an efficient, explainable information-theoretic heuristic with offline-compiled exact-optimal correction. By identifying and compiling only the *residual region*, the small set of belief states on which the heuristic fails, the framework achieves what neither component achieves alone: interactive efficiency *and* exhaustive completeness. We formalized the belief-space search, the composite utility, the shared minimax solver, and the partial compilation strategy; we proved termination, determinism, and per-domain closure; and we verified the claims through complete closed-loop enumeration of **47,814** games across six strictly-isolated domains, with zero failures and a worst case of six turns. A quantitative architectural analysis showed that 98.70% of the universe is closed by the heuristic alone, with 17,911 compiled decision nodes (≈644 KB) sufficing to rescue the residual 1.30%. The work demonstrates that, for finite deterministic decision problems, *verifiable optimality* is attainable not by abandoning heuristics but by compiling away their residuals.
 
 ---
 
 ## Appendix A. Recommended Figures
 
-1. **System architecture** — universe, pattern matrix, offline compiler, compiled tables, online hybrid controller, verification gate.
-2. **Decision pipeline** — `DECIDE` ordered dispatch (lookup → split-opener → endgame → hard-splitter → heuristic).
-3. **Hybrid search workflow** — heuristic phase → residual detection (lookup) → optimal correction (minimax) → solution, annotated with belief-size triggers.
-4. **Candidate reduction over time** — mean $|\mathcal{K}_t|$ vs turn $t$, illustrating geometric collapse (branching ≈10.3).
-5. **Offline compilation workflow** — replay → identify $\mathcal{R}_\delta$ → `MINIMAX` → decision table $\Psi_\delta$ → runtime lookup.
-6. **Residual activation map** — the 30 residual words by cluster family (`?ATCH`, `grape/...`, `width/wight`), showing concentration in sibling clusters.
-7. **Verification workflow** — six-domain enumeration → 47,814 games → version-stamped cache → frozen-bundle self-play.
+1. **System architecture**: universe, pattern matrix, offline compiler, compiled tables, online hybrid controller, verification gate.
+2. **Decision pipeline**: `DECIDE` ordered dispatch (lookup → split-opener → endgame → hard-splitter → heuristic).
+3. **Hybrid search workflow**: heuristic phase → residual detection (lookup) → optimal correction (minimax) → solution, annotated with belief-size triggers.
+4. **Candidate reduction over time**: mean $|\mathcal{K}_t|$ vs turn $t$, illustrating geometric collapse (branching ≈10.3).
+5. **Offline compilation workflow**: replay → identify $\mathcal{R}_\delta$ → `MINIMAX` → decision table $\Psi_\delta$ → runtime lookup.
+6. **Residual activation map**: the 30 residual words by cluster family (`?ATCH`, `grape/...`, `width/wight`), showing concentration in sibling clusters.
+7. **Verification workflow**: six-domain enumeration → 47,814 games → version-stamped cache → frozen-bundle self-play.
 8. **Decision DAG** for a representative residual cluster, showing optimal branching and worst-case depth $\le 6$.
-9. **Benchmark comparison** — per-domain turn distribution (all within $[1,6]$, 100% solve).
-10. **Search-state transitions** — $\mathcal{K}_t \to \mathcal{K}_{t+1}$ under partition, with residual-cluster inset.
+9. **Benchmark comparison**: per-domain turn distribution (all within $[1,6]$, 100% solve).
+10. **Search-state transitions**: $\mathcal{K}_t \to \mathcal{K}_{t+1}$ under partition, with residual-cluster inset.
 
 ## Appendix B. Algorithmic Summary (Pseudocode)
 
-**Algorithm 1 — Build optimal decision table.**
+**Algorithm 1. Build optimal decision table.**
 ```
 function BUILD_TABLE(M, root, kmax):
-    table ← ∅
+    table <- {}
     walk(root, kmax)
     return table
 function walk(S, bud):
@@ -658,9 +658,9 @@ function walk(S, bud):
         walk(B, bud − 1)
 ```
 
-**Algorithm 2 — Hybrid online decision.** (See §5.2, `DECIDE`.)
+**Algorithm 2. Hybrid online decision.** (See §5.2, `DECIDE`.)
 
-**Algorithm 3 — Exact minimax.** (See §5.3, `MINIMAX`; memoized on $(\text{frozenset}(S), k)$.)
+**Algorithm 3. Exact minimax.** (See §5.3, `MINIMAX`; memoized on $(\text{frozenset}(S), k)$.)
 
 ## Appendix C. Reviewer Criticism Resolution Map
 
