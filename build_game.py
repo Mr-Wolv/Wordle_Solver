@@ -43,7 +43,6 @@ STRAY_DIST = os.path.join(REPO_ROOT, "src", "wordle_solver", "desktop", "dist")
 # Clean, CI-equivalent build venv. Git-ignored (see .gitignore: `.venv`).
 BUILD_VENV = os.path.join(REPO_ROOT, ".venv_build")
 BUILD_VENV_PY = os.path.join(BUILD_VENV, "Scripts", "python.exe")
-BUILD_VENV_MARKER = os.path.join(BUILD_VENV, ".requirements_hash")
 REQUIREMENTS = os.path.join(REPO_ROOT, "requirements.txt")
 
 
@@ -73,40 +72,36 @@ def _rm(path: str) -> None:
 def _resolve_base_python() -> str:
     """Find a 3.12+ interpreter to bootstrap the clean build venv.
 
-    Prefer the project's own dev venv (known 3.12), then the `py` launcher,
-    then bare `python`. We only use it to *create* the build venv; site-packages
-    from the dev venv are NOT inherited (venv is isolated).
+    IMPORTANT: we must NOT seed from the project's own dev venv (.venv) — it
+    is itself polluted with agent-environment packages (boto3, openai, lxml,
+    ...) on this machine. We bootstrap from the *system* Python 3.12, then
+    install ONLY requirements.txt and strip PYTHONPATH at build time, so the
+    frozen bundle matches CI's dependency boundary exactly.
     """
-    dev_venv_py = os.path.join(REPO_ROOT, ".venv", "Scripts", "python.exe")
-    for cand in (dev_venv_py, "py -3.12", "python3.12", "python"):
+    sys_py = r"C:\Users\GIGABYTE\AppData\Local\Programs\Python\Python312\python.exe"
+    for cand in (sys_py, "py -3.12", "python3.12", "python"):
         if os.path.exists(cand):
             return cand
-    # `py` may exist but not as a file path; try it directly.
     return "py -3.12"
 
 
-def _requirements_signature() -> str:
-    import hashlib
-    with open(REQUIREMENTS, "rb") as fh:
-        return hashlib.sha256(fh.read()).hexdigest()
-
-
 def _ensure_build_venv() -> str:
-    """Create/refresh `.venv_build` from requirements.txt; return its python."""
-    sig = _requirements_signature()
-    marker_ok = os.path.exists(BUILD_VENV_MARKER) and (
-        open(BUILD_VENV_MARKER).read().strip() == sig
-    )
-    if os.path.exists(BUILD_VENV_PY) and marker_ok:
-        return BUILD_VENV_PY
+    """Create a fresh `.venv_build` from requirements.txt; return its python.
 
+    The build venv is a throwaway cache: we ALWAYS recreate it so a stale or
+    previously-polluted venv can never leak extra packages (boto3, lxml, ...)
+    into the frozen bundle. Recreation takes a few seconds and is the entire
+    point of the clean-venv approach.
+    """
     base = _resolve_base_python()
-    print(f"[build] creating clean build venv (.venv_build) from {base}")
+    print(f"[build] (re)creating clean build venv (.venv_build) from {base}")
     _rm(BUILD_VENV)
     # `base` may be "py -3.12"; split into argv for subprocess.
     base_argv = base.split()
     subprocess.run([*base_argv, "-m", "venv", BUILD_VENV], check=True)
     # Upgrade pip then install ONLY requirements.txt (CI-equivalent boundary).
+    # Run with a sanitized env so the global PYTHONPATH / user-site pollution
+    # on this host cannot be inherited into the venv.
     subprocess.run(
         [BUILD_VENV_PY, "-m", "pip", "install", "--upgrade", "pip"],
         check=True, env=_clean_env(),
@@ -115,8 +110,6 @@ def _ensure_build_venv() -> str:
         [BUILD_VENV_PY, "-m", "pip", "install", "-r", REQUIREMENTS],
         check=True, env=_clean_env(),
     )
-    with open(BUILD_VENV_MARKER, "w") as fh:
-        fh.write(sig)
     print("[build] clean build venv ready")
     return BUILD_VENV_PY
 
